@@ -1,198 +1,193 @@
-use std::{collections::HashMap, hash::Hash};
+// mod listing;
 
-use iced_x86::{Code, Decoder, DecoderOptions, Formatter, Instruction, NasmFormatter, OpKind, Register};
+mod test;
+mod symbol_resolver;
+mod memory;
+mod ir;
 
-#[derive(Clone)]
-enum Expression{
-    UnknownRegisterValue(Register, u64),
-    Expression(Box<Expression>),
-    Value(i64),
-    Add(Box<Expression>, Box<Expression>),
-    Sub(Box<Expression>, Box<Expression>),
-    Multiply(Box<Expression>, Box<Expression>)
+use std::{collections::BTreeMap, ops::Add, pin::Pin, sync::Arc};
+
+use egui::{text::LayoutJob, Color32, FontFamily, FontId, Key, Layout, RichText, Sense, Stroke, TextStyle, Visuals};
+
+mod tab_viewer;
+use iced_x86::Register;
+// use listing::Listing;
+
+use eframe::egui;
+
+use egui_dock::{DockArea, DockState, NodeIndex, Style, SurfaceIndex};
+
+use crate::{ir::{lift, Address, Expression, ExpressionOp, HighFunction, VariableDefinition, VariableSymbol}, memory::{LiteralState, Memory}, symbol_resolver::SymbolTable, tab_viewer::{BlockGraph, BlockView, Decompiler, TabKind, TabSignals, TabViewer}};
+
+
+
+struct DecompilerApp<'s> {
+    memory: Memory<'s>,
+    current_function:Option<Address>,
+    signals: TabSignals,
+    tree: DockState<TabKind>,
+    buttons: [(&'static str, TabKind); 3]
 }
 
-impl std::fmt::Debug for Expression {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Expression::UnknownRegisterValue(register, ip) => f.write_fmt(format_args!("{register:?}")),
-            Expression::Expression(expression) => f.write_fmt(format_args!("{expression:?}")),
-            Expression::Value(v) => if *v > 0xffff { f.write_fmt(format_args!("{v:x}")) } else { f.write_fmt(format_args!("{v}")) },
-            Expression::Add(l, r) => f.write_fmt(format_args!("{l:?} + {r:?}")),
-            Expression::Sub(l, r) => f.write_fmt(format_args!("{l:?} - {r:?}")),
-            Expression::Multiply(l, r) => f.write_fmt(format_args!("{l:?}*{r:?}")),
-        }
-    }
-}
+fn main() -> eframe::Result {
+    // env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size([1024., 768.0]),
+        ..Default::default()
+    };
+    let mut memory = Memory::new();
+    let state = LiteralState::from_machine_code(test::EXAMPLE_CODE, test::EXAMPLE_CODE_BITNESS, test::EXAMPLE_CODE_RIP);
+    let ir = lift(state.get_instructions());
+    let f_start = Address(test::EXAMPLE_CODE_RIP);
+    memory.literal.insert_strict(state.get_interval(), state).unwrap();
+    memory.ir = ir;
 
-impl PartialEq for Expression {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::UnknownRegisterValue(l0, ip0), Self::UnknownRegisterValue(r0, ip1)) => l0 == r0 && ip0 == ip1,
-            (Self::Expression(l0), Self::Expression(r0)) => l0 == r0,
-            (Self::Value(l0), Self::Value(r0)) => l0 == r0,
-            (Self::Add(l0, l1), Self::Add(r0, r1)) => l0 == r0 && l1 == r1,
-            (Self::Sub(l0, l1), Self::Sub(r0, r1)) => l0 == r0 && l1 == r1,
-            (Self::Multiply(l0, l1), Self::Multiply(r0, r1)) => l0 == r0 && l1 == r1,
-            _ => false,
-        }
-    }
-}
 
-enum MemoryStateKind{
-    SameAs(u64),
-    Expression(Expression)
-}
+    let hf = HighFunction::from_mem(f_start, &memory);
+    hf.fill_global_symbols(&mut memory);
 
-struct MemoryState{
-    registers:HashMap<Register, MemoryStateKind>
-}
 
-struct Memory {
-    mem:HashMap<u64, MemoryState>
-}
+    // memory.symbols.add(test::EXAMPLE_CODE_RIP, "openPAK".to_owned());
+    // memory.symbols.add(0x611084, "pakFilename".to_owned());
+    // memory.symbols.add(0x669218, "pakFilename2".to_owned());
+    // memory.symbols.add(0x6128a0, "propName".to_owned());
+    // memory.symbols.add(0x4b07f0, "get_pak_cache".to_owned());
+    // memory.symbols.add(0x4b0730, "logPAK".to_owned());
+    // memory.symbols.add(0x4a1310, "file_OpenEx".to_owned());
+    // memory.symbols.add(0x04a1490, "read_last_open_file_into".to_owned());
+    // memory.symbols.add(0x49C5C0, "mem_newBlock_inSpecialSegment".to_owned());
 
-impl MemoryState {
-    pub fn new() -> Self {
-        Self { registers: HashMap::new() }
-    }
+    // memory.symbols.add(0x4BCDD0, "_strncpy".to_owned());
+    // memory.symbols.add(0x668F94, "pakFlags".to_owned());
+    // memory.symbols.add(0x668fcc, "isDebugPak".to_owned());
 
-    pub fn get_register_state(&mut self, reg:Register, ip:u64) -> Expression {
-        self.registers.entry((reg, ip)).or_insert(Expression::UnknownRegisterValue(reg, ip)).clone()
-    }
-}
 
-fn op_to_expression(state:&mut MemoryState, instr:&Instruction, op_index:u8, ) -> Expression {
-    let mut kind = OpKind::default();
-    let mut reg = Register::default();
-    match op_index {
-        0 => {
-            kind = instr.op0_kind();
-            reg = instr.op0_register();
-        },
-        1 => {
-            kind = instr.op1_kind();
-            reg = instr.op1_register();
-        },
-        _ => panic!("Unsupported op count!")
-    }
-    match kind {
-        OpKind::Register => state.get_register_state(reg, instr.ip()),
-        OpKind::Memory => {
-            let mut base = state.get_register_state(instr.memory_base(), instr.ip());
+    // memory.symbols.add(0x4A1220, "close_last_open_fd_if_no_error".to_owned());
+    // memory.symbols.add(0x4B0760, "setPalData".to_owned());
+    // memory.symbols.add(0x62C124, "IS_READ_PAK_WHOLE_MAYBE".to_owned());
+    // memory.symbols.add(0x668F90, "palData".to_owned());
+    // memory.symbols.add(0x4A2E40, "setStatics".to_owned());
+    // memory.symbols.add(0x52e268, "USER32.DLL::MessageBoxA".to_owned());
 
-            let displacement = match instr.memory_displ_size() {
-                4 => Expression::Value(instr.memory_displacement32() as i64),
-                8 | 1 => Expression::Value(instr.memory_displacement64() as i64),
-                n => todo!("Unexpected memory displacement size {n}.")
-            };
+    // memory.symbols.add(0x4affb0, "fixObjectPointers".to_owned());
+    // memory.symbols.add(0x4b1450, "toRenderable".to_owned());
+    // memory.symbols.add(0x49c600, "mem_FreeMem_inSpecialSegment".to_owned());
+    // memory.symbols.add(0x4b2370, "curious_s15f16_math".to_owned());
+    // memory.symbols.add(0x4afed0, "ui_scaling_related".to_owned());
+    // memory.symbols.add(0x4b0840, "cache_pak".to_owned());
+    // memory.symbols.add(0x4b0680, "loadTextures".to_owned());
+    // memory.symbols.add(0x4ada90, "SetStaticsAndReturnPalCase_1to2_2to3".to_owned());
+    // memory.symbols.add(0x4a2e80, "SET_PAK_RELATED_TO_NULL".to_owned());
+    // memory.symbols.add(0x4a14f0, "seek_file".to_owned());
+
+
+    let mut ast = hf.build_ast(&memory);
+    
+
+    let var_esp = Expression::from(VariableSymbol::Register(Register::ESP));
+
+    let mut param_1 = var_esp.clone();
+    param_1.add_value(4);
+    param_1.dereference();
+
+    let mut param_2 = var_esp.clone();
+    param_2.add_value(8);
+    param_2.dereference();
+
+    let mut param_3 = var_esp;
+    param_3.add_value(12);
+    param_3.dereference();
+
+    let stack_4 = VariableSymbol::Ram(Expression::from(vec![ExpressionOp::Variable(VariableSymbol::Register(Register::ESP)), ExpressionOp::Value(4), ExpressionOp::Add(0, 1)]));
+    let stack_8 = VariableSymbol::Ram(Expression::from(vec![ExpressionOp::Variable(VariableSymbol::Register(Register::ESP)), ExpressionOp::Value(8), ExpressionOp::Add(0, 1)]));
+    let stack_12 = VariableSymbol::Ram(Expression::from(vec![ExpressionOp::Variable(VariableSymbol::Register(Register::ESP)), ExpressionOp::Value(12), ExpressionOp::Add(0, 1)]));
+    ast.scope.add(hf.pts.root, stack_4.clone(), VariableDefinition::new("char *".to_owned(), "filename_a".to_owned(), stack_4));
+    ast.scope.add(hf.pts.root, stack_8.clone(), VariableDefinition::new("char *".to_owned(), "filename_b".to_owned(), stack_8));
+    ast.scope.add(hf.pts.root, stack_12.clone(), VariableDefinition::new("char *".to_owned(), "filename_c".to_owned(), stack_12));
+
+    memory.ast.insert(f_start, ast);
+    memory.functions.insert(f_start, hf);
+
+    
+
+    eframe::run_native(
+        "Ouroboros",
+        options,
+        Box::new(|cc| {
+            let style = &cc.egui_ctx.style();
+            let buttons = [
+            ("Listing", TabKind::ASM(BlockView::new(style, &memory))),
+            ("Decompiler", TabKind::Decompiler(Decompiler::new(style))),
+            ("Block Graph", TabKind::BlockGraph(BlockGraph::new())),
+            ];
+
+
+            let mut tree = DockState::new(vec![TabKind::ASM(BlockView::new(style, &memory))]);
+            tree.split((SurfaceIndex(0), NodeIndex(0)), egui_dock::Split::Right, 0.5, egui_dock::Node::leaf(TabKind::Decompiler(Decompiler::new(style))));
+
+
             
-            if instr.memory_base().is_ip() {
-                displacement
-            } else {
-                if instr.memory_index() != Register::None {
-                    let scale_reg = state.get_register_state(instr.memory_index(), instr.ip());
-                    let scale_size = Expression::Value(instr.memory_index_scale() as i64);
-                    let index = Expression::Multiply(Box::new(scale_reg), Box::new(scale_size));
-                    base = Expression::Add(Box::new(base), Box::new(index));
-                }
-                Expression::Add(Box::new(base), Box::new(displacement))
-            }
-        },
-        OpKind::Immediate32to64 => {
-            Expression::Value(instr.immediate64() as i64)
-        }
-        _ => todo!("Unexpected op0 kind: {kind:?}")
-    }
+
+            Ok(Box::new(DecompilerApp{
+                current_function: Some(f_start),
+                memory,
+                tree,
+                signals:TabSignals::new(),
+                buttons,
+            }))
+        }),
+    )
 }
 
-pub(crate) fn main() {
-    let bytes = EXAMPLE_CODE;
-    let mut decoder =
-        Decoder::with_ip(EXAMPLE_CODE_BITNESS, bytes, EXAMPLE_CODE_RIP, DecoderOptions::NONE);
 
-    // Formatters: Masm*, Nasm*, Gas* (AT&T) and Intel* (XED).
-    // For fastest code, see `SpecializedFormatter` which is ~3.3x faster. Use it if formatting
-    // speed is more important than being able to re-assemble formatted instructions.
-    let mut formatter = NasmFormatter::new();
 
-    // Change some options, there are many more
-    formatter.options_mut().set_digit_separator("`");
-    formatter.options_mut().set_first_operand_char_index(10);
 
-    // String implements FormatterOutput
-    let mut output = String::new();
 
-    // Initialize this outside the loop because decode_out() writes to every field
-    let mut instruction = Instruction::default();
 
-    let mut state = MemoryState::new();
-    while decoder.can_decode() {
-        // There's also a decode() method that returns an instruction but that also
-        // means it copies an instruction (40 bytes):
-        //     instruction = decoder.decode();
-        decoder.decode_out(&mut instruction);
-
-        // Format the instruction ("disassemble" it)
-        output.clear();
-        formatter.format(&instruction, &mut output);
-
-        // Eg. "00007FFAC46ACDB2 488DAC2400FFFFFF     lea       rbp,[rsp-100h]"
-        print!("{:016X} ", instruction.ip());
-        let start_index = (instruction.ip() - EXAMPLE_CODE_RIP) as usize;
-        let instr_bytes = &bytes[start_index..start_index + instruction.len()];
-        for b in instr_bytes.iter() {
-            print!("{:02X}", b);
-        }
-        if instr_bytes.len() < HEXBYTES_COLUMN_BYTE_LENGTH {
-            for _ in 0..HEXBYTES_COLUMN_BYTE_LENGTH - instr_bytes.len() {
-                print!("  ");
-            }
-        }
-        print!(" {output}\t;{:?}\t", instruction.code());
-        match instruction.code() {
-            Code::Mov_rm64_r64 | Code::Mov_r64_rm64 => {
-                let left = op_to_expression(&mut state, &instruction, 0);
-                let right = op_to_expression(&mut state,&instruction, 1);
-                print!("{left:?} = {right:?}")
-            },
-            Code::Push_r64 => {
-                let stack = state.get_register_state(Register::ESP, instruction.ip());
-                let left = Expression::Sub(Box::new(stack), Box::new(Expression::Value(4)));
-                let right = op_to_expression(&mut state,&instruction, 0);
-                print!("{left:?} = {right:?}")
-            },
-            Code::Lea_r64_m => {
-                let left = op_to_expression(&mut state,&instruction, 0);
-                let right = op_to_expression(&mut state,&instruction, 1);
-                print!("{left:?} = {right:?}")
-            }
-            Code::Sub_rm64_imm32 => {
-                let left = op_to_expression(&mut state,&instruction, 0);
-                let right = op_to_expression(&mut state,&instruction, 1);
-                print!("{left:?} -= {right:?}")
-            },
-            Code::Xor_r64_rm64 | Code::Xor_r32_rm32 => {
-                let left = op_to_expression(&mut state,&instruction, 0);
-                let right = op_to_expression(&mut state,&instruction, 1);
-                if left != right {
-                    print!("{left:?} ^= {right:?}")
-                } else {
-                    print!("{left:?} = 0");
+impl<'s> eframe::App for DecompilerApp<'s> {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::TopBottomPanel::top("menu_panel").show(ctx, |panel| {
+            let menu_bar = egui::MenuBar::new().ui(panel, |ui| {
+                let file = ui.menu_button("File", |file_ui| {
+                    
+                    let open = file_ui.button("Open...");
+                    if open.clicked() || file_ui.ctx().input(|i| i.key_pressed(Key::O)) {
+                        println!("Open file");
+                    }
+                    
+                });
+                file.response.ctx.enable_accesskit();
+                if ui.ctx().input(|i| i.key_pressed(Key::F)) {
+                    file.response.request_focus();
                 }
-            }
-            _ => (),
-        }
-        println!()
-    }
-}
+                ui.menu_button("Windows", |windows_ui| {
+                    let style = windows_ui.style();
+                    
+                    for (name, tab) in &self.buttons {
+                        if windows_ui.button(*name).clicked() {
+                            if let Some(index) = self.tree.find_tab_from(|p| p == tab) {
+                                self.tree.set_active_tab(index);
+                            } else {
+                                self.tree.main_surface_mut().push_to_focused_leaf(tab.clone());
+                            }
+                        }
+                    }
+                });
+            });
+            menu_bar.response.ctx.enable_accesskit();
+        });
+        egui::TopBottomPanel::bottom("status_bar").show(ctx,|panel| {
+            panel.label("Status bar...");
+        });
 
-const HEXBYTES_COLUMN_BYTE_LENGTH: usize = 10;
-const EXAMPLE_CODE_BITNESS: u32 = 64;
-const EXAMPLE_CODE_RIP: u64 = 0x0000_7FFA_C46A_CDA4;
-static EXAMPLE_CODE: &[u8] = &[
-    0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x55, 0x57, 0x41, 0x56, 0x48, 0x8D,
-    0xAC, 0x24, 0x00, 0xFF, 0xFF, 0xFF, 0x48, 0x81, 0xEC, 0x00, 0x02, 0x00, 0x00, 0x48, 0x8B, 0x05,
-    0x18, 0x57, 0x0A, 0x00, 0x48, 0x33, 0xC4, 0x48, 0x89, 0x85, 0xF0, 0x00, 0x00, 0x00, 0x4C, 0x8B,
-    0x05, 0x2F, 0x24, 0x0A, 0x00, 0x48, 0x8D, 0x05, 0x78, 0x7C, 0x04, 0x00, 0x33, 0xFF,
-];
+        self.signals.new_frame();
+        
+        let mut tab_viewer = TabViewer::new(&self.memory, self.current_function, &mut self.signals);
+        DockArea::new(&mut self.tree)
+            .style(Style::from_egui(ctx.style().as_ref()))
+            .show(ctx, &mut tab_viewer);
+
+
+    }
+    
+}

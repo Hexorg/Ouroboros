@@ -1,0 +1,96 @@
+use std::collections::HashMap;
+
+use crate::ir::program_tree_structure::ProgramTreeStructure;
+
+use super::{VariableSymbol, SingleEntrySingleExit, Address};
+
+
+#[derive(Clone, Debug)]
+pub struct VariableType {
+    pub name:String,
+}
+
+#[derive(Clone, Debug)]
+pub struct VariableDefinition{
+    pub kind: VariableType,
+    pub name: String,
+    pub variable: VariableSymbol,
+}
+
+impl VariableDefinition {
+    pub fn new(kind:String, name:String, value:VariableSymbol) -> Self {
+        Self{
+            kind:VariableType{name:kind},
+            name,
+            variable: value
+        }
+    }
+}
+
+pub type SymbolMap = HashMap<VariableSymbol, VariableDefinition>;
+
+
+pub struct Scope {
+    /// Map of SESEs to what variables are defined at that level
+    map: HashMap<SingleEntrySingleExit<Address>, SymbolMap>,
+    pub parents:HashMap<SingleEntrySingleExit<Address>, Vec<SingleEntrySingleExit<Address>>>,
+}
+
+impl Scope {
+    pub fn new() -> Self {
+        Self { 
+            map: HashMap::new(),
+            parents: HashMap::new(),
+         }
+    }
+
+    pub fn fill_parents(&mut self, pts:&ProgramTreeStructure, root:SingleEntrySingleExit<Address>) {
+        if let Some(children) = pts.get_children(root) {
+            for child in children {
+                self.parents.entry(*child).or_default().push(root);
+                self.fill_parents(pts, *child);
+            }
+        }
+    }
+
+    pub fn insert(&mut self, key:SingleEntrySingleExit<Address>, value:SymbolMap) -> Option<SymbolMap> {
+        self.map.insert(key, value)
+    }
+
+    pub fn add(&mut self, section:SingleEntrySingleExit<Address>, key:VariableSymbol, value:VariableDefinition) -> Option<VariableDefinition> {
+        self.map.entry(section).or_default().insert(key, value)
+    }
+
+    pub fn get(&self, section:SingleEntrySingleExit<Address>) -> Option<&SymbolMap> {
+        self.map.get(&section)
+    }
+
+    pub fn get_symbol(&self, section:SingleEntrySingleExit<Address>, key:&VariableSymbol) -> Option<&VariableDefinition> {
+        // println!("Looking for symbol {key:?}");
+        if let Some(scope) = self.map.get(&section) {
+            if let Some(def) = scope.get(key) {
+                return Some(def)
+            }
+        }
+        if let Some(parents) = self.parents.get(&section) {
+            for parent in parents {
+                if let Some(def) = self.get_symbol(*parent, key) {
+                    return Some(def)
+                }
+            }
+        }
+        None
+    }
+
+    pub fn pretty_print(&self, pts:&ProgramTreeStructure) -> String {
+        pts.pretty_print(&|sese, prefix| {
+            let mut output = String::new();
+            if let Some(vars) = self.get(sese) {
+                for (key, value) in vars {
+                    output.push_str(&format!("{prefix}{key} = {}", value.name));
+                }
+            }
+            output
+        })
+    }
+} 
