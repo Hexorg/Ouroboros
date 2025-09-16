@@ -1,6 +1,6 @@
 use std::{borrow::Cow, collections::HashMap};
 
-use egui::{text::LayoutJob, text_selection::LabelSelectionState, Color32, Frame, Grid, InnerResponse, Pos2, Rect, Response, RichText, Sense, Spacing, Stroke, Style, Ui, Vec2, Widget};
+use egui::{text::LayoutJob, text_selection::LabelSelectionState, Color32, Frame, Grid, InnerResponse, Label, Pos2, Rect, Response, RichText, Sense, Spacing, Stroke, Style, TextEdit, Ui, Vec2, Widget};
 
 use crate::{ir::*, memory::Memory, tab_viewer::TabSignals};
 
@@ -20,6 +20,7 @@ fn vertical<R>(ui:&mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResp
 pub struct Decompiler{
     theme:CodeTheme,
     interned_tokens:HashMap<&'static str, RichText>,
+    renaming_symbol:Option<VariableSymbol>,
     pub hovered_symbol:Option<String>,
     pub hovered_set_now:bool,
 }
@@ -55,7 +56,7 @@ impl Decompiler {
             (";", theme.make_rich(TokenType::Punctuation, ";")),
             (" ", theme.make_rich(TokenType::Whitespace, " ")),
         ]);
-        Self { theme, interned_tokens, hovered_symbol:None, hovered_set_now:false }
+        Self { theme, interned_tokens, hovered_symbol:None, hovered_set_now:false, renaming_symbol:None}
         
     }
     fn mk_color(&self, lbl: &'static str) -> RichText {
@@ -294,23 +295,61 @@ impl Decompiler {
         if is_declaration {
             ui.label(self.theme.make_rich(TokenType::Type, sym.kind.name.clone()));
         }
-        let mut lbl = None;
-        if let Some(h) = &self.hovered_symbol {
-            if h == &sym.name {
-                lbl = Some(Frame::new().fill(Color32::LIGHT_YELLOW).show(ui, |ui| {
-                    ui.label(self.theme.make_rich(TokenType::Type, sym.name.clone()))
-                }).inner);
+
+        let lbl;
+        let mut frame = Frame::new().begin(ui);
+        {
+            if let Some(renaming) = &self.renaming_symbol {
+                if renaming == symbol {
+                    let mut text = sym.name.clone();
+                    let te = TextEdit::singleline(&mut text).desired_width(0.0).clip_text(false);
+
+                    lbl = frame.content_ui.add(te);
+                    if lbl.lost_focus() {
+                        self.renaming_symbol = None;
+                    } else {
+                        if !lbl.has_focus() {
+                            lbl.request_focus();
+                        }
+
+                    }
+                } else {
+                    lbl = frame.content_ui.label(self.theme.make_rich(TokenType::Symbol, sym.name.clone()));
+                    lbl.context_menu(|ui| {
+                        if ui.button("Rename").clicked() {
+                            println!("Rename {}", sym.name);
+                            self.renaming_symbol = Some(symbol.clone())
+                        }
+                    });
+                }
+            } else {
+                lbl = frame.content_ui.label(self.theme.make_rich(TokenType::Symbol, sym.name.clone()));
+                lbl.context_menu(|ui| {
+                    if ui.button("Rename").clicked() {
+                        println!("Rename {}", sym.name);
+                        self.renaming_symbol = Some(symbol.clone())
+                    }
+                });
             }
         }
+        let frame_response = frame.allocate_space(ui);
 
-        let lbl = lbl.unwrap_or_else(|| ui.label(self.theme.make_rich(TokenType::Symbol, sym.name.clone())));
-        let selection = LabelSelectionState::load(ui.ctx());
-        if ui.rect_contains_pointer(lbl.rect) && !selection.has_selection() {
+
+        if let Some(h) = &self.hovered_symbol {
+            if h == &sym.name {
+                frame.frame.fill = Color32::LIGHT_YELLOW;
+            }
+        }
+        if frame_response.hovered() {
+            frame.frame.fill = Color32::LIGHT_YELLOW;
             if !self.hovered_symbol.as_ref().and_then(|s| Some(s == &sym.name)).unwrap_or(false) {
                 self.hovered_symbol = Some(sym.name.clone());
             }
             self.hovered_set_now = true;
         }
+        frame.paint(ui);
+    
+
         lbl
     }
 
