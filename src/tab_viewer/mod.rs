@@ -103,7 +103,11 @@ impl<'m> egui_dock::TabViewer for TabViewer<'m> {
                 l.draw(ui, self.memory, &mut self.signals);
             },
             TabKind::Decompiler(b) => {
+                b.hovered_set_now = false;
                 b.draw(ui, self.memory, self.current_function, &mut self.signals);
+                if !b.hovered_set_now {
+                    b.hovered_symbol = None;
+                }
             },
             TabKind::BlockGraph(b) => b.draw(ui, self.memory, self.current_function, &mut self.signals)
         }

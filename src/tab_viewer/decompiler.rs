@@ -1,6 +1,6 @@
 use std::{borrow::Cow, collections::HashMap};
 
-use egui::{text::LayoutJob, Color32, Grid, InnerResponse, Pos2, Rect, Response, RichText, Spacing, Stroke, Style, Ui, Vec2};
+use egui::{text::LayoutJob, text_selection::LabelSelectionState, Color32, Frame, Grid, InnerResponse, Pos2, Rect, Response, RichText, Sense, Spacing, Stroke, Style, Ui, Vec2, Widget};
 
 use crate::{ir::*, memory::Memory, tab_viewer::TabSignals};
 
@@ -20,6 +20,8 @@ fn vertical<R>(ui:&mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResp
 pub struct Decompiler{
     theme:CodeTheme,
     interned_tokens:HashMap<&'static str, RichText>,
+    pub hovered_symbol:Option<String>,
+    pub hovered_set_now:bool,
 }
 
 
@@ -53,7 +55,7 @@ impl Decompiler {
             (";", theme.make_rich(TokenType::Punctuation, ";")),
             (" ", theme.make_rich(TokenType::Whitespace, " ")),
         ]);
-        Self { theme, interned_tokens }
+        Self { theme, interned_tokens, hovered_symbol:None, hovered_set_now:false }
         
     }
     fn mk_color(&self, lbl: &'static str) -> RichText {
@@ -165,8 +167,7 @@ impl Decompiler {
                 ui.horizontal(|ui| {
                     ui.label(tab_prefix);
                     if let Cow::Borrowed(s) = resolve_symbol(mem, &result, hf, *pts) {
-                        ui.label(self.theme.make_rich(TokenType::Type, s.kind.name.clone()));
-                        ui.label(self.theme.make_rich(TokenType::Symbol, s.name.clone()));
+                        self.draw_symbol(ui, &result, true, mem, hf, *pts);
                         ui.label(self.mk_color("="));
                     }
                     self.draw_expression(ui, signals, mem, hf, destination, *pts, destination.get_entry_point(), true);
@@ -233,9 +234,7 @@ impl Decompiler {
                     ui.label(self.theme.make_rich(TokenType::Symbol, name));
                     ui.label(self.mk_color("("));
                     for (idx, arg) in args.iter().enumerate() {
-                        let sym = resolve_symbol(mem, &arg, hf, hf.pts.root);
-                        ui.label(self.theme.make_rich(TokenType::Type, sym.kind.name.clone()));
-                        ui.label(self.theme.make_rich(TokenType::Symbol, sym.name.clone()));
+                        self.draw_symbol(ui, &arg, true, mem, hf, hf.pts.root);
                         if idx < args.len() - 1 {
                             ui.label(self.mk_color(","));
                         }
@@ -256,11 +255,10 @@ impl Decompiler {
         }
     }
 
-    fn draw_dereference(&self, ui:&mut Ui, signals: &mut TabSignals, mem:&Memory, hf:&HighFunction, e:&Expression, ip_block:SingleEntrySingleExit<Address>, pos:usize) {
+    fn draw_dereference(&mut self, ui:&mut Ui, signals: &mut TabSignals, mem:&Memory, hf:&HighFunction, e:&Expression, ip_block:SingleEntrySingleExit<Address>, pos:usize) {
         match &e[pos] {
             ExpressionOp::Value(v) => {
-                let sym = resolve_symbol(mem, &VariableSymbol::Ram(Expression::from(*v)), hf, ip_block);
-                let mut label = ui.label(self.theme.make_rich(TokenType::Symbol, sym.name.clone()));
+                let mut label = self.draw_symbol(ui, &VariableSymbol::Ram(Expression::from(*v)), false, mem, hf, ip_block);
                 if label.clicked() {
                     signals.request_pos(Address(*v as u64));
                 }
@@ -271,15 +269,14 @@ impl Decompiler {
                 }
             },
             ExpressionOp::Variable(v) => {
-                let sym = resolve_symbol(mem, v, hf, ip_block);
                 ui.label(self.mk_color("deref"));
-                let label = ui.label(self.theme.make_rich(TokenType::Symbol, sym.name.clone()));
+                let label = self.draw_symbol(ui, v, false, mem, hf, ip_block);
                 label.on_hover_text("Deference::Variable");
             },
             a => {
                 let var = VariableSymbol::Ram(e.get_sub_expression(pos));
                 if let Cow::Borrowed(sym) = resolve_symbol(mem, &var, hf, ip_block) {
-                    let label = ui.label(self.theme.make_rich(TokenType::Symbol, sym.name.clone()));
+                    let label = self.draw_symbol(ui, &var, false, mem, hf, ip_block);
                     label.on_hover_text("Deference::ComplexExpression");
                 } else {
                     ui.label(self.mk_color("deref"));
@@ -292,8 +289,33 @@ impl Decompiler {
         }
     }
 
+    fn draw_symbol(&mut self, ui:&mut Ui, symbol:&VariableSymbol, is_declaration:bool, mem:&Memory, hf:&HighFunction, ip_block:SingleEntrySingleExit<Address>) -> Response {
+        let sym = resolve_symbol(mem, &symbol, hf, ip_block);
+        if is_declaration {
+            ui.label(self.theme.make_rich(TokenType::Type, sym.kind.name.clone()));
+        }
+        let mut lbl = None;
+        if let Some(h) = &self.hovered_symbol {
+            if h == &sym.name {
+                lbl = Some(Frame::new().fill(Color32::LIGHT_YELLOW).show(ui, |ui| {
+                    ui.label(self.theme.make_rich(TokenType::Type, sym.name.clone()))
+                }).inner);
+            }
+        }
 
-    fn draw_expression(&self, ui:&mut Ui, signals: &mut TabSignals, mem:&Memory, hf:&HighFunction, e:&Expression, ip_block:SingleEntrySingleExit<Address>, pos:usize, is_call:bool) {
+        let lbl = lbl.unwrap_or_else(|| ui.label(self.theme.make_rich(TokenType::Symbol, sym.name.clone())));
+        let selection = LabelSelectionState::load(ui.ctx());
+        if ui.rect_contains_pointer(lbl.rect) && !selection.has_selection() {
+            if !self.hovered_symbol.as_ref().and_then(|s| Some(s == &sym.name)).unwrap_or(false) {
+                self.hovered_symbol = Some(sym.name.clone());
+            }
+            self.hovered_set_now = true;
+        }
+        lbl
+    }
+
+
+    fn draw_expression(&mut self, ui:&mut Ui, signals: &mut TabSignals, mem:&Memory, hf:&HighFunction, e:&Expression, ip_block:SingleEntrySingleExit<Address>, pos:usize, is_call:bool) {
         match &e[pos] {
             ExpressionOp::Dereference(d) => {
                 self.draw_dereference(ui, signals, mem, hf, e, ip_block, *d);
@@ -307,8 +329,7 @@ impl Decompiler {
             ExpressionOp::Value(v) => {
                 
                 if is_call {
-                    let sym = resolve_symbol(mem, &VariableSymbol::Ram(Expression::from(*v)), hf, ip_block);
-                    let mut label = ui.label(self.theme.make_rich(TokenType::Symbol, sym.name.clone()));
+                    let mut label = self.draw_symbol(ui, &VariableSymbol::Ram(Expression::from(*v)), false, mem, hf, ip_block);
                     if label.clicked() {
                         signals.request_pos(Address(*v as u64));
                     }
@@ -322,9 +343,7 @@ impl Decompiler {
                 }
             },
             ExpressionOp::Variable(v) => {
-                let sym = resolve_symbol(mem, v, hf, ip_block);
-                // println!("Resolving {v} to {}", sym.name);
-                let label = ui.label(self.theme.make_rich(TokenType::Symbol, sym.name.clone()));
+                let label = self.draw_symbol(ui, v, false, mem, hf, ip_block);
                 label.on_hover_text("Expression::Variable");
             },
             ExpressionOp::NotEquals(l, r) => {
