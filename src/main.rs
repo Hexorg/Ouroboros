@@ -45,7 +45,19 @@ fn main() -> eframe::Result {
 
     let hf = HighFunction::from_mem(f_start, &memory);
     hf.fill_global_symbols(&mut memory);
+    let pts = hf.pts.pretty_print(&|sese, tabs| {
+        let mut result = String::new();
+        let start = hf.composed_blocks.get_at_point(hf.cfg.start).unwrap();
+        for nbr in start.iter_function(&hf.composed_blocks) {
+            if hf.pts.get_section(nbr.address) == Some(sese) {
+                result.push_str(&format!("{tabs}{nbr:?}\n"));
+            }
+        }
+        result.pop();
+        result
+    });
 
+    println!("PTS:\n{pts}");
 
     // memory.symbols.add(test::EXAMPLE_CODE_RIP, "openPAK".to_owned());
     // memory.symbols.add(0x611084, "pakFilename".to_owned());
