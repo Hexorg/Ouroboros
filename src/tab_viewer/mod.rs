@@ -3,7 +3,7 @@ use std::ops::Add;
 use egui::Popup;
 use egui_dock::tab_viewer::OnCloseResponse;
 
-use crate::{ir::Address,  memory::Memory, DecompilerApp};
+use crate::{ir::{Address, VariableSymbol},  memory::Memory, DecompilerApp};
 
 mod theme;
 mod instruction_view;
@@ -16,9 +16,29 @@ pub use instruction_view::{InstructionsView, BlockView, draw_bb};
 pub use decompiler::{Decompiler};
 pub use bb_graph::BlockGraph;
 
-enum SignalKind {
+pub enum SignalKind {
     RequestPos(Address),
-    Other
+    RenameSymbol(VariableSymbol, String),
+}
+
+impl std::fmt::Debug for SignalKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SignalKind::RequestPos(address) => f.write_fmt(format_args!("SignalKind::RequestPos({address})")),
+            SignalKind::RenameSymbol(variable_symbol, name) => f.write_fmt(format_args!("SignalKind::RenameSymbol({variable_symbol}, {name})")),
+        }
+    }
+}
+
+
+impl<'a> IntoIterator for &'a TabSignals {
+    type Item = &'a SignalKind;
+    
+    type IntoIter = std::slice::Iter<'a, SignalKind>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.signals.iter()
+    }
+    
 }
 
 pub struct TabSignals{
@@ -41,6 +61,11 @@ impl TabSignals {
     pub fn request_pos(&mut self, addr:Address) {
         use SignalKind::RequestPos;
         self.new_signals.push(RequestPos(addr));
+    }
+
+    pub fn rename_symbol(&mut self, symbol:VariableSymbol, name:String) {
+        use SignalKind::RenameSymbol;
+        self.new_signals.push(RenameSymbol(symbol, name))
     }
 
     pub fn new_frame(&mut self) {

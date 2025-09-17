@@ -55,9 +55,15 @@ fn compute_sese_address_ranges(table:&mut NoditMap<Address, Interval<Address>, S
 
     fn process_path<'a>(table:&mut NoditMap<Address, Interval<Address>, SingleEntrySingleExit<Address>>, start:Address, root:SingleEntrySingleExit<Address>, blocks:&'a BlockStorage) -> &'a BasicBlock {
         let start = blocks.get_at_point(start).unwrap();
+        if start.address == root.1 {
+            return start;
+        }
         table.insert_merge_touching_if_values_equal(start.get_interval(), root);
         let mut last_block = start;
         for node in start.iter_path(blocks) {
+            if node.address == root.1 {
+                break;
+            }
             table.insert_merge_touching_if_values_equal(node.get_interval(), root);
             last_block = node;
         }
@@ -152,7 +158,7 @@ where N: Copy + Eq + std::hash::Hash + std::fmt::Debug
 {
     let mut pts = HashMap::new();
     let mut stack:Vec<SingleEntrySingleExit<N>> = Vec::new();
-    let largest = *seses.first().unwrap();
+    let largest = seses.first().copied().unwrap_or(SingleEntrySingleExit(start, end));
     for sese in seses {
         while let Some(top) = stack.last() {
             let start_top_dominates_sese = is_ancestor(top.0, sese.0, &dom);
@@ -198,6 +204,7 @@ where
     for _ in 0..(depth*2) { // 2 spaces per depth
         tab_prefix.push(' ');
     }
+
     let mut output = format!("{tab_prefix}{root:?} {{");
     tab_prefix.push(' ');
     tab_prefix.push(' ');

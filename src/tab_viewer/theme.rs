@@ -23,7 +23,8 @@ struct TokenStyle {
 pub struct CodeTheme {
     dark_mode: bool,
     font_id: egui::FontId,
-    formats:enum_map::EnumMap<TokenType, TokenStyle>
+    formats:enum_map::EnumMap<TokenType, TokenStyle>,
+    pub highlight_color:Color32,
 }
 impl CodeTheme {
     pub fn from_style(style: &egui::Style) -> Self {
@@ -53,6 +54,7 @@ impl CodeTheme {
                 TokenType::Punctuation => TokenStyle{color:Color32::LIGHT_GRAY, strong:false, underlined:false},
                 TokenType::Whitespace => TokenStyle{color:Color32::TRANSPARENT, strong:false, underlined:false},
             ],
+            highlight_color: Color32::from_rgba_unmultiplied(255, 255, 224, 30)
         }
     }
 
@@ -71,6 +73,7 @@ impl CodeTheme {
                 TokenType::Punctuation => TokenStyle{color:Color32::DARK_GRAY, strong:false, underlined:false},
                 TokenType::Whitespace => TokenStyle{color:Color32::TRANSPARENT, strong:false, underlined:false},
             ],
+            highlight_color: Color32::from_rgba_unmultiplied(40, 40, 10, 30)
         }
     }
 

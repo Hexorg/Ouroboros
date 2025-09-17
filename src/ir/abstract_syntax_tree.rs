@@ -19,7 +19,7 @@ pub enum AstStatement{
     Block(Vec<AstStatement>),
     Nop,
     Function{
-        name:String,
+        name:VariableSymbol,
         args: Vec<VariableSymbol>,
         body:Box<AstStatement>
     },
@@ -88,7 +88,6 @@ impl std::fmt::Debug for AbstractSyntaxTree {
 
 impl AbstractSyntaxTree {
     pub fn new(hf:&HighFunction, mem:&Memory) -> Self {
-        let name = mem.symbols.map.get(&hf.cfg.start.0).unwrap();
         let mut scope = Scope::new();
         scope.fill_parents(&hf.pts, hf.pts.root);
 
@@ -116,17 +115,17 @@ impl AbstractSyntaxTree {
 
         let body = AstStatement::Block(build_block(&mut scope, hf.cfg.start, hf, hf.pts.root));
         let mut statements = Vec::new();
-        statements.push(AstStatement::Comment(format!("Scope:")));
-        statements.push(AstStatement::MultilineComment(scope.pretty_print(&hf.pts)));
-        statements.push(AstStatement::Comment(format!("*** Memory reads ***")));
-        for read in &hf.memory_read {
-            statements.push(AstStatement::Comment(format!("{read}")));
-        }
-        statements.push(AstStatement::Comment(String::new()));
-        statements.push(AstStatement::Comment(format!("*** Memory writes ***")));
-        for write in &hf.memory_written {
-            statements.push(AstStatement::Comment(format!("{write}")));
-        }
+        // statements.push(AstStatement::Comment(format!("Scope:")));
+        // statements.push(AstStatement::MultilineComment(scope.pretty_print(&hf.pts)));
+        // statements.push(AstStatement::Comment(format!("*** Memory reads ***")));
+        // for read in &hf.memory_read {
+        //     statements.push(AstStatement::Comment(format!("{read}")));
+        // }
+        // statements.push(AstStatement::Comment(String::new()));
+        // statements.push(AstStatement::Comment(format!("*** Memory writes ***")));
+        // for write in &hf.memory_written {
+        //     statements.push(AstStatement::Comment(format!("{write}")));
+        // }
         let mut args = Vec::new();
         match hf.calling_convention {
             CallingConvention::Cdecl => {
@@ -141,7 +140,7 @@ impl AbstractSyntaxTree {
                 }
             }
         }
-        statements.push(AstStatement::Function{ name: name.name.clone(), args, body:Box::new(body)});
+        statements.push(AstStatement::Function{ name: VariableSymbol::Ram(Expression::from(hf.cfg.start)), args, body:Box::new(body)});
         Self{
             scope,
             entry: AstStatement::Block(statements),   
@@ -182,7 +181,7 @@ fn define_all_variables(scope:&mut Scope, sese:SingleEntrySingleExit<Address>, e
     match &expression[pos] {
         ExpressionOp::Dereference(d) => {
                     let variable = VariableSymbol::Ram(expression.get_sub_expression(*d));
-                    if scope.get_symbol(sese, &variable).is_none() {
+                    if scope.get_symbol_recursive(sese, &variable).is_none() {
                         scope.add(sese, variable.clone(), VariableDefinition { 
                             kind: VariableType{name:String::from("void *")}, 
                             name: format!("DAT_{variable}"), 
@@ -190,7 +189,7 @@ fn define_all_variables(scope:&mut Scope, sese:SingleEntrySingleExit<Address>, e
                     }
                 },
         ExpressionOp::Variable(variable_symbol) => {
-            if scope.get_symbol(sese, variable_symbol).is_none() {
+            if scope.get_symbol_recursive(sese, variable_symbol).is_none() {
                 scope.add(sese, variable_symbol.clone(), VariableDefinition { 
                             kind: VariableType{name:String::from("void *")}, 
                             name: format!("DAT_{variable_symbol}"), 

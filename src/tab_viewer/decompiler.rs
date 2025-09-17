@@ -1,6 +1,6 @@
 use std::{borrow::Cow, collections::HashMap};
 
-use egui::{text::LayoutJob, text_selection::LabelSelectionState, Color32, Frame, Grid, InnerResponse, Label, Pos2, Rect, Response, RichText, Sense, Spacing, Stroke, Style, TextEdit, Ui, Vec2, Widget};
+use egui::{text::LayoutJob, text_selection::LabelSelectionState, Color32, Frame, Grid, Id, InnerResponse, Key, Label, Pos2, Rect, Response, RichText, Sense, Spacing, Stroke, Style, TextEdit, Ui, Vec2, Widget};
 
 use crate::{ir::*, memory::Memory, tab_viewer::TabSignals};
 
@@ -20,8 +20,8 @@ fn vertical<R>(ui:&mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResp
 pub struct Decompiler{
     theme:CodeTheme,
     interned_tokens:HashMap<&'static str, RichText>,
-    renaming_symbol:Option<VariableSymbol>,
-    pub hovered_symbol:Option<String>,
+    renaming_symbol:Option<(VariableSymbol, Rect, String)>,
+    pub hovered_symbol:Option<VariableSymbol>,
     pub hovered_set_now:bool,
 }
 
@@ -168,7 +168,7 @@ impl Decompiler {
                 ui.horizontal(|ui| {
                     ui.label(tab_prefix);
                     if let Cow::Borrowed(s) = resolve_symbol(mem, &result, hf, *pts) {
-                        self.draw_symbol(ui, &result, true, mem, hf, *pts);
+                        self.draw_symbol(ui, signals, &result, true, mem, hf, *pts);
                         ui.label(self.mk_color("="));
                     }
                     self.draw_expression(ui, signals, mem, hf, destination, *pts, destination.get_entry_point(), true);
@@ -224,7 +224,6 @@ impl Decompiler {
                 ui.horizontal(|ui| {
                     ui.label(tab_prefix);
                     ui.label(self.mk_color("return"));
-                    // println!("Trying to resolve {result} ({result:?})");
                     self.draw_expression(ui, signals, mem, hf, result, *pts, result.get_entry_point(), false);
                     ui.label(self.mk_color(";"));
                 });
@@ -232,10 +231,10 @@ impl Decompiler {
             AstStatement::Function { name, args, body} => {
                 ui.horizontal(|ui| {
                     ui.label(tab_prefix);
-                    ui.label(self.theme.make_rich(TokenType::Symbol, name));
+                    self.draw_symbol(ui, signals, name, false, mem, hf, hf.pts.root);
                     ui.label(self.mk_color("("));
                     for (idx, arg) in args.iter().enumerate() {
-                        self.draw_symbol(ui, &arg, true, mem, hf, hf.pts.root);
+                        self.draw_symbol(ui, signals, &arg, true, mem, hf, hf.pts.root);
                         if idx < args.len() - 1 {
                             ui.label(self.mk_color(","));
                         }
@@ -259,7 +258,7 @@ impl Decompiler {
     fn draw_dereference(&mut self, ui:&mut Ui, signals: &mut TabSignals, mem:&Memory, hf:&HighFunction, e:&Expression, ip_block:SingleEntrySingleExit<Address>, pos:usize) {
         match &e[pos] {
             ExpressionOp::Value(v) => {
-                let mut label = self.draw_symbol(ui, &VariableSymbol::Ram(Expression::from(*v)), false, mem, hf, ip_block);
+                let mut label = self.draw_symbol(ui, signals, &VariableSymbol::Ram(Expression::from(*v)), false, mem, hf, ip_block);
                 if label.clicked() {
                     signals.request_pos(Address(*v as u64));
                 }
@@ -271,13 +270,13 @@ impl Decompiler {
             },
             ExpressionOp::Variable(v) => {
                 ui.label(self.mk_color("deref"));
-                let label = self.draw_symbol(ui, v, false, mem, hf, ip_block);
+                let label = self.draw_symbol(ui, signals, v, false, mem, hf, ip_block);
                 label.on_hover_text("Deference::Variable");
             },
             a => {
                 let var = VariableSymbol::Ram(e.get_sub_expression(pos));
                 if let Cow::Borrowed(sym) = resolve_symbol(mem, &var, hf, ip_block) {
-                    let label = self.draw_symbol(ui, &var, false, mem, hf, ip_block);
+                    let label = self.draw_symbol(ui, signals, &var, false, mem, hf, ip_block);
                     label.on_hover_text("Deference::ComplexExpression");
                 } else {
                     ui.label(self.mk_color("deref"));
@@ -290,7 +289,7 @@ impl Decompiler {
         }
     }
 
-    fn draw_symbol(&mut self, ui:&mut Ui, symbol:&VariableSymbol, is_declaration:bool, mem:&Memory, hf:&HighFunction, ip_block:SingleEntrySingleExit<Address>) -> Response {
+    fn draw_symbol(&mut self, ui:&mut Ui, signals: &mut TabSignals, symbol:&VariableSymbol, is_declaration:bool, mem:&Memory, hf:&HighFunction, ip_block:SingleEntrySingleExit<Address>) -> Response {
         let sym = resolve_symbol(mem, &symbol, hf, ip_block);
         if is_declaration {
             ui.label(self.theme.make_rich(TokenType::Type, sym.kind.name.clone()));
@@ -299,51 +298,52 @@ impl Decompiler {
         let lbl;
         let mut frame = Frame::new().begin(ui);
         {
-            if let Some(renaming) = &self.renaming_symbol {
-                if renaming == symbol {
-                    let mut text = sym.name.clone();
-                    let te = TextEdit::singleline(&mut text).desired_width(0.0).clip_text(false);
-
-                    lbl = frame.content_ui.add(te);
-                    if lbl.lost_focus() {
-                        self.renaming_symbol = None;
-                    } else {
-                        if !lbl.has_focus() {
-                            lbl.request_focus();
+            let frame_pos = ui.cursor();
+            
+            'add_appropriate_ui_element: {
+                if let Some((renaming, ui_id, mut name)) = std::mem::take(&mut self.renaming_symbol) {
+                    if &renaming == symbol  && frame_pos == ui_id {
+                        let text = TextEdit::singleline(&mut name).desired_width(0.0).clip_text(false);
+                        lbl = frame.content_ui.add(text); 
+                        if !frame.content_ui.input(|i| i.key_down(Key::Escape)) {
+                            if lbl.lost_focus() {
+                                signals.rename_symbol(renaming, name);
+                                break 'add_appropriate_ui_element;
+                            } 
+                            if !lbl.has_focus() {
+                                lbl.request_focus();
+                            }
+                            self.renaming_symbol = Some((renaming, ui_id, name));
                         }
-
-                    }
-                } else {
-                    lbl = frame.content_ui.label(self.theme.make_rich(TokenType::Symbol, sym.name.clone()));
-                    lbl.context_menu(|ui| {
-                        if ui.button("Rename").clicked() {
-                            println!("Rename {}", sym.name);
-                            self.renaming_symbol = Some(symbol.clone())
-                        }
-                    });
+                        break 'add_appropriate_ui_element;
+                    }   
+                    self.renaming_symbol = Some((renaming, ui_id, name));
                 }
-            } else {
-                lbl = frame.content_ui.label(self.theme.make_rich(TokenType::Symbol, sym.name.clone()));
-                lbl.context_menu(|ui| {
-                    if ui.button("Rename").clicked() {
-                        println!("Rename {}", sym.name);
-                        self.renaming_symbol = Some(symbol.clone())
+
+                let label = Label::new(self.theme.make_rich(TokenType::Symbol, sym.name.clone()));
+                lbl = frame.content_ui.add(label);
+                lbl.context_menu(|menu| {
+                    if menu.button("Rename").clicked() {
+                        self.renaming_symbol = Some((symbol.clone(), frame_pos, sym.name.clone()))
                     }
                 });
+                if lbl.contains_pointer() && frame.content_ui.input(|i| i.key_pressed(Key::F2)) {
+                    self.renaming_symbol = Some((symbol.clone(), frame_pos, sym.name.clone()))
+                }
             }
         }
         let frame_response = frame.allocate_space(ui);
 
 
         if let Some(h) = &self.hovered_symbol {
-            if h == &sym.name {
-                frame.frame.fill = Color32::LIGHT_YELLOW;
+            if h == symbol {
+                frame.frame.fill = self.theme.highlight_color;
             }
         }
         if frame_response.hovered() {
-            frame.frame.fill = Color32::LIGHT_YELLOW;
-            if !self.hovered_symbol.as_ref().and_then(|s| Some(s == &sym.name)).unwrap_or(false) {
-                self.hovered_symbol = Some(sym.name.clone());
+            frame.frame.fill = self.theme.highlight_color;
+            if !self.hovered_symbol.as_ref().and_then(|s| Some(s == symbol)).unwrap_or(false) {
+                self.hovered_symbol = Some(symbol.clone());
             }
             self.hovered_set_now = true;
         }
@@ -368,7 +368,7 @@ impl Decompiler {
             ExpressionOp::Value(v) => {
                 
                 if is_call {
-                    let mut label = self.draw_symbol(ui, &VariableSymbol::Ram(Expression::from(*v)), false, mem, hf, ip_block);
+                    let mut label = self.draw_symbol(ui, signals, &VariableSymbol::Ram(Expression::from(*v)), false, mem, hf, ip_block);
                     if label.clicked() {
                         signals.request_pos(Address(*v as u64));
                     }
@@ -382,7 +382,7 @@ impl Decompiler {
                 }
             },
             ExpressionOp::Variable(v) => {
-                let label = self.draw_symbol(ui, v, false, mem, hf, ip_block);
+                let label = self.draw_symbol(ui, signals, v, false, mem, hf, ip_block);
                 label.on_hover_text("Expression::Variable");
             },
             ExpressionOp::NotEquals(l, r) => {
@@ -442,10 +442,20 @@ impl Decompiler {
 
 fn resolve_symbol<'a>(mem:&'a Memory, dst:&VariableSymbol, hf:&'a HighFunction, ip_block:SingleEntrySingleExit<Address>) -> Cow<'a, VariableDefinition> {
     if let Some(def) = mem.symbols.resolve(dst)
-        .or_else(|| mem.ast.get(&hf.cfg.start).unwrap().scope.get_symbol(ip_block, dst)) 
+        .or_else(|| mem.ast.get(&hf.cfg.start).unwrap().scope.get_symbol_recursive(ip_block, dst)) 
     {
         Cow::Borrowed(def)
     } else {
         Cow::Owned(VariableDefinition { kind: VariableType { name: "void *".to_owned() }, name: format!("unresolved_({dst})",), variable: dst.clone() })
     }
+}
+
+fn resolve_symbol_mut<'a>(mem:&'a mut Memory, dst:&VariableSymbol, hf:&'a HighFunction, ip_block:SingleEntrySingleExit<Address>) -> Option<&'a mut VariableDefinition> {
+    mem.symbols.resolve_mut(dst)
+        .or_else(|| {
+            let ast = mem.ast.get_mut(&hf.cfg.start).unwrap();
+            let section = ast.scope.find_owning_section(dst);
+            section.and_then(|s| ast.scope.get_symbol_mut(s, dst))
+        }) 
+
 }

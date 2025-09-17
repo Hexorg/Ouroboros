@@ -65,7 +65,21 @@ impl Scope {
         self.map.get(&section)
     }
 
-    pub fn get_symbol(&self, section:SingleEntrySingleExit<Address>, key:&VariableSymbol) -> Option<&VariableDefinition> {
+    pub fn find_owning_section(&self, symbol:&VariableSymbol) -> Option<SingleEntrySingleExit<Address>> {
+        for (child, parents) in &self.parents {
+            if self.map.get(child).and_then(|s| s.get(symbol)).is_some() {
+                return Some(*child);
+            }
+            for parent in parents {
+                if self.map.get(parent).and_then(|s| s.get(symbol)).is_some() {
+                return Some(*parent);
+            }
+            }
+        }
+        None
+    }
+
+    pub fn get_symbol_recursive(&self, section:SingleEntrySingleExit<Address>, key:&VariableSymbol) -> Option<&VariableDefinition> {
         // println!("Looking for symbol {key:?}");
         if let Some(scope) = self.map.get(&section) {
             if let Some(def) = scope.get(key) {
@@ -74,9 +88,18 @@ impl Scope {
         }
         if let Some(parents) = self.parents.get(&section) {
             for parent in parents {
-                if let Some(def) = self.get_symbol(*parent, key) {
+                if let Some(def) = self.get_symbol_recursive(*parent, key) {
                     return Some(def)
                 }
+            }
+        }
+        None
+    }
+
+    pub fn get_symbol_mut(&mut self, section:SingleEntrySingleExit<Address>, key:&VariableSymbol) -> Option<&mut VariableDefinition> {
+        if let Some(scope) = self.map.get_mut(&section) {
+            if let Some(def) = scope.get_mut(key) {
+                return Some(def)
             }
         }
         None
@@ -86,8 +109,11 @@ impl Scope {
         pts.pretty_print(&|sese, prefix| {
             let mut output = String::new();
             if let Some(vars) = self.get(sese) {
-                for (key, value) in vars {
+                for (idx, (key, value)) in vars.iter().enumerate() {
                     output.push_str(&format!("{prefix}{key} = {}", value.name));
+                    if idx + 1 < vars.len() {
+                        output.push('\n');
+                    }
                 }
             }
             output

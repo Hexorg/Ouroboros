@@ -17,7 +17,7 @@ use eframe::egui;
 
 use egui_dock::{DockArea, DockState, NodeIndex, Style, SurfaceIndex};
 
-use crate::{ir::{lift, Address, Expression, ExpressionOp, HighFunction, VariableDefinition, VariableSymbol}, memory::{LiteralState, Memory}, symbol_resolver::SymbolTable, tab_viewer::{BlockGraph, BlockView, Decompiler, TabKind, TabSignals, TabViewer}};
+use crate::{ir::{lift, Address, Expression, ExpressionOp, HighFunction, VariableDefinition, VariableSymbol}, memory::{LiteralState, Memory}, symbol_resolver::SymbolTable, tab_viewer::{BlockGraph, BlockView, Decompiler, SignalKind, TabKind, TabSignals, TabViewer}};
 
 
 
@@ -168,10 +168,10 @@ impl<'s> eframe::App for DecompilerApp<'s> {
                     }
                     
                 });
-                file.response.ctx.enable_accesskit();
-                if ui.ctx().input(|i| i.key_pressed(Key::F)) {
-                    file.response.request_focus();
-                }
+                // if ui.ctx().input(|i| i.key_pressed(Key::F)) {
+                //     file.response.request_focus();
+                //     todo!("Make sure a TextEdit isn't accepting input somewhere")
+                // }
                 ui.menu_button("Windows", |windows_ui| {
                     let style = windows_ui.style();
                     
@@ -199,6 +199,24 @@ impl<'s> eframe::App for DecompilerApp<'s> {
             .style(Style::from_egui(ctx.style().as_ref()))
             .show(ctx, &mut tab_viewer);
 
+        for signal in &self.signals {
+            use SignalKind::*;
+            match signal {
+                RequestPos(_) => (),
+                RenameSymbol(var, name) => {
+                    self.memory.symbols.resolve_mut(var).and_then(|v| Some(v.name = name.clone())).or_else(|| {
+                        self.current_function
+                            .and_then(|f| self.memory.ast.get_mut(&f))
+                            .and_then(|ast| {
+                                let section = ast.scope.find_owning_section(var).unwrap();
+                                ast.scope.get_symbol_mut(section, var).unwrap().name = name.clone();
+                                Some(())
+                    })
+                    });
+                },
+                a => println!("Process signal: {a:?}"),
+            }
+        }
 
     }
     

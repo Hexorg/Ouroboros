@@ -53,6 +53,10 @@ impl SymbolTable {
         self.map.get(&e.get_memory_address_or_null())
     }
 
+    pub fn resolve_mut(&mut self, e:&VariableSymbol) ->Option<&mut VariableDefinition> {
+        self.map.get_mut(&e.get_memory_address_or_null())
+    }
+
     pub fn resolve_exp(&self, e:&Expression) -> Option<&VariableDefinition> {
         self.map.get(&e.get_memory_address_or_null())
     }

@@ -90,6 +90,12 @@ impl From<i64> for Expression {
     }
 }
 
+impl From<Address> for Expression {
+    fn from(value: Address) -> Self {
+        Self(vec![ExpressionOp::Value(value.0 as i64)])
+    }
+}
+
 impl From<VariableSymbol> for Expression {
     fn from(variable: VariableSymbol) -> Self {
         Self(vec![ExpressionOp::Variable(variable)])
