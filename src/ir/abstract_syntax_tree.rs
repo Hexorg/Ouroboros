@@ -2,7 +2,7 @@ use std::{collections::HashMap, ops::Index};
 
 use iced_x86::Register;
 
-use crate::{ir::{address, basic_block::NextBlock, high_function::CallingConvention, SymbolMap, VariableType}, memory::Memory};
+use crate::{ir::{address, basic_block::NextBlock, high_function::CallingConvention, type_system::VariableType, SymbolMap}, memory::Memory};
 
 use super::{BasicBlock, Expression, VariableDefinition, Scope, VariableSymbol, HighFunction, ExpressionOp, Address, SingleEntrySingleExit};
 
@@ -102,7 +102,7 @@ impl AbstractSyntaxTree {
                         format!("{key}")
                     };
                     let value = VariableDefinition{
-                        kind:VariableType { name: "void *".to_string() },
+                        kind:VariableType::default(),
                         name: symbol_name,
                         variable: key.clone()
                     };
@@ -183,7 +183,7 @@ fn define_all_variables(scope:&mut Scope, sese:SingleEntrySingleExit<Address>, e
                     let variable = VariableSymbol::Ram(expression.get_sub_expression(*d));
                     if scope.get_symbol_recursive(sese, &variable).is_none() {
                         scope.add(sese, variable.clone(), VariableDefinition { 
-                            kind: VariableType{name:String::from("void *")}, 
+                            kind: VariableType::default(), 
                             name: format!("DAT_{variable}"), 
                             variable});
                     }
@@ -191,7 +191,7 @@ fn define_all_variables(scope:&mut Scope, sese:SingleEntrySingleExit<Address>, e
         ExpressionOp::Variable(variable_symbol) => {
             if scope.get_symbol_recursive(sese, variable_symbol).is_none() {
                 scope.add(sese, variable_symbol.clone(), VariableDefinition { 
-                            kind: VariableType{name:String::from("void *")}, 
+                            kind: VariableType::default(), 
                             name: format!("DAT_{variable_symbol}"), 
                             variable:variable_symbol.clone()});
             }

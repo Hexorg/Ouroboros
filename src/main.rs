@@ -5,9 +5,7 @@ mod symbol_resolver;
 mod memory;
 mod ir;
 
-use std::{collections::BTreeMap, ops::Add, pin::Pin, sync::Arc};
-
-use egui::{text::LayoutJob, Color32, FontFamily, FontId, Key, Layout, RichText, Sense, Stroke, TextStyle, Visuals};
+use egui::{Key, };
 
 mod tab_viewer;
 use iced_x86::Register;
@@ -32,7 +30,7 @@ struct DecompilerApp<'s> {
 fn main() -> eframe::Result {
     // env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1024., 768.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1280., 768.0]),
         ..Default::default()
     };
     let mut memory = Memory::new();
@@ -45,20 +43,7 @@ fn main() -> eframe::Result {
 
     let hf = HighFunction::from_mem(f_start, &memory);
     hf.fill_global_symbols(&mut memory);
-    let pts = hf.pts.pretty_print(&|sese, tabs| {
-        let mut result = String::new();
-        let start = hf.composed_blocks.get_at_point(hf.cfg.start).unwrap();
-        for nbr in start.iter_function(&hf.composed_blocks) {
-            if hf.pts.get_section(nbr.address) == Some(sese) {
-                result.push_str(&format!("{tabs}{nbr:?}\n"));
-            }
-        }
-        result.pop();
-        result
-    });
-
-    println!("PTS:\n{pts}");
-
+    
     // memory.symbols.add(test::EXAMPLE_CODE_RIP, "openPAK".to_owned());
     // memory.symbols.add(0x611084, "pakFilename".to_owned());
     // memory.symbols.add(0x669218, "pakFilename2".to_owned());
@@ -113,9 +98,9 @@ fn main() -> eframe::Result {
     let stack_4 = VariableSymbol::Ram(Expression::from(vec![ExpressionOp::Variable(VariableSymbol::Register(Register::ESP)), ExpressionOp::Value(4), ExpressionOp::Add(0, 1)]));
     let stack_8 = VariableSymbol::Ram(Expression::from(vec![ExpressionOp::Variable(VariableSymbol::Register(Register::ESP)), ExpressionOp::Value(8), ExpressionOp::Add(0, 1)]));
     let stack_12 = VariableSymbol::Ram(Expression::from(vec![ExpressionOp::Variable(VariableSymbol::Register(Register::ESP)), ExpressionOp::Value(12), ExpressionOp::Add(0, 1)]));
-    ast.scope.add(hf.pts.root, stack_4.clone(), VariableDefinition::new("char *".to_owned(), "filename_a".to_owned(), stack_4));
-    ast.scope.add(hf.pts.root, stack_8.clone(), VariableDefinition::new("char *".to_owned(), "filename_b".to_owned(), stack_8));
-    ast.scope.add(hf.pts.root, stack_12.clone(), VariableDefinition::new("char *".to_owned(), "filename_c".to_owned(), stack_12));
+    ast.scope.add(hf.pts.root, stack_4.clone(), VariableDefinition::new(ir::VariableType::Pointer(Box::new(ir::VariableType::Char)), "filename_a".to_owned(), stack_4));
+    ast.scope.add(hf.pts.root, stack_8.clone(), VariableDefinition::new(ir::VariableType::Pointer(Box::new(ir::VariableType::Char)), "filename_b".to_owned(), stack_8));
+    ast.scope.add(hf.pts.root, stack_12.clone(), VariableDefinition::new(ir::VariableType::Pointer(Box::new(ir::VariableType::Char)), "filename_c".to_owned(), stack_12));
 
     memory.ast.insert(f_start, ast);
     memory.functions.insert(f_start, hf);

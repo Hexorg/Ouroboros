@@ -34,6 +34,16 @@ impl Decompiler {
             ("else", theme.make_rich(TokenType::Keyword, "else ")),
             ("while", theme.make_rich(TokenType::Keyword, "while ")),
             ("return", theme.make_rich(TokenType::Keyword, "return ")),
+            
+            ("int_32t", theme.make_rich(TokenType::Type, "int_32t ")),
+            ("uint_32t", theme.make_rich(TokenType::Type, "uint_32t ")),
+            ("int_16t", theme.make_rich(TokenType::Type, "int_16t ")),
+            ("uint_16t", theme.make_rich(TokenType::Type, "uint_16t ")),
+            ("char", theme.make_rich(TokenType::Type, "char ")),
+            ("byte", theme.make_rich(TokenType::Type, "byte ")),
+            ("float", theme.make_rich(TokenType::Type, "float ")),
+            ("double", theme.make_rich(TokenType::Type, "double ")),
+            
             ("deref", theme.make_rich(TokenType::Punctuation, "*")),
             ("(", theme.make_rich(TokenType::Punctuation, "(")),
             (")", theme.make_rich(TokenType::Punctuation, ")")),
@@ -54,6 +64,7 @@ impl Decompiler {
             ("|", theme.make_rich(TokenType::Punctuation, " | ")),
             (",", theme.make_rich(TokenType::Punctuation, ", ")),
             (";", theme.make_rich(TokenType::Punctuation, ";")),
+
             (" ", theme.make_rich(TokenType::Whitespace, " ")),
         ]);
         Self { theme, interned_tokens, hovered_symbol:None, hovered_set_now:false, renaming_symbol:None}
@@ -289,10 +300,29 @@ impl Decompiler {
         }
     }
 
+    fn draw_type(&mut self, ui:&mut Ui, signals: &mut TabSignals, kind:&VariableType) {
+        match kind {
+            VariableType::Byte => ui.label(self.mk_color("byte")),
+            VariableType::Char => ui.label(self.mk_color("char")),
+            VariableType::S16 => ui.label(self.mk_color("int_16t")),
+            VariableType::U16 => ui.label(self.mk_color("uint_16t")),
+            VariableType::S32 => ui.label(self.mk_color("int_32t")),
+            VariableType::U32 => ui.label(self.mk_color("uint_32t")),
+            VariableType::F32 => ui.label(self.mk_color("float")),
+            VariableType::F64 => ui.label(self.mk_color("double")),
+            VariableType::Pointer(variable_type) => {
+                self.draw_type(ui, signals, &variable_type);
+                ui.label(self.mk_color("deref"));
+                ui.label(self.mk_color(" "))
+            },
+            VariableType::Struct(_) => todo!(),
+        };
+    }
+
     fn draw_symbol(&mut self, ui:&mut Ui, signals: &mut TabSignals, symbol:&VariableSymbol, is_declaration:bool, mem:&Memory, hf:&HighFunction, ip_block:SingleEntrySingleExit<Address>) -> Response {
         let sym = resolve_symbol(mem, &symbol, hf, ip_block);
         if is_declaration {
-            ui.label(self.theme.make_rich(TokenType::Type, sym.kind.name.clone()));
+            self.draw_type(ui, signals, &sym.kind);
         }
 
         let lbl;
@@ -446,7 +476,7 @@ fn resolve_symbol<'a>(mem:&'a Memory, dst:&VariableSymbol, hf:&'a HighFunction, 
     {
         Cow::Borrowed(def)
     } else {
-        Cow::Owned(VariableDefinition { kind: VariableType { name: "void *".to_owned() }, name: format!("unresolved_({dst})",), variable: dst.clone() })
+        Cow::Owned(VariableDefinition { kind: VariableType::default(), name: format!("unresolved_({dst})",), variable: dst.clone() })
     }
 }
 

@@ -44,7 +44,7 @@ impl SymbolTable {
 
     pub fn add(&mut self, address:u64, symbol:String) {
         self.map.insert(address, VariableDefinition { 
-            kind: VariableType { name: String::new() }, 
+            kind: VariableType::default(), 
             name: symbol, 
             variable: VariableSymbol::Ram(Expression::new()) });
     }

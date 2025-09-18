@@ -27,6 +27,7 @@ mod high_function;
 mod abstract_syntax_tree;
 mod program_tree_structure;
 mod scope;
+mod type_system;
 
 pub use expression::{Expression, ExpressionOp, VariableSymbol};
 pub use address::Address;
@@ -36,6 +37,7 @@ pub use control_flow_graph::*;
 pub use scope::*;
 pub use high_function::HighFunction;
 pub use abstract_syntax_tree::{AbstractSyntaxTree, AstStatement};
+pub use type_system::VariableType;
 
 pub type BlockStorage = NoditMap<Address, Interval<Address>, BasicBlock>;
 

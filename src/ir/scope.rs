@@ -1,14 +1,9 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Write};
 
-use crate::ir::program_tree_structure::ProgramTreeStructure;
+use crate::ir::{program_tree_structure::ProgramTreeStructure, type_system::VariableType};
 
 use super::{VariableSymbol, SingleEntrySingleExit, Address};
 
-
-#[derive(Clone, Debug)]
-pub struct VariableType {
-    pub name:String,
-}
 
 #[derive(Clone, Debug)]
 pub struct VariableDefinition{
@@ -18,9 +13,9 @@ pub struct VariableDefinition{
 }
 
 impl VariableDefinition {
-    pub fn new(kind:String, name:String, value:VariableSymbol) -> Self {
+    pub fn new(kind:VariableType, name:String, value:VariableSymbol) -> Self {
         Self{
-            kind:VariableType{name:kind},
+            kind,
             name,
             variable: value
         }
@@ -106,17 +101,23 @@ impl Scope {
     }
 
     pub fn pretty_print(&self, pts:&ProgramTreeStructure) -> String {
-        pts.pretty_print(&|sese, prefix| {
-            let mut output = String::new();
+        let mut buffer = String::new();
+        pts.pretty_print(&mut buffer, &|buffer, depth, sese| {
+            let mut has_written = false;
             if let Some(vars) = self.get(sese) {
-                for (idx, (key, value)) in vars.iter().enumerate() {
-                    output.push_str(&format!("{prefix}{key} = {}", value.name));
-                    if idx + 1 < vars.len() {
-                        output.push('\n');
+                for (key, value) in vars.iter() {
+                    if !has_written {
+                        buffer.write_char('\n')?;
+                        has_written = true;
                     }
+                    write!(buffer, "{}{key} = {}\n", " ".repeat(depth as usize), value.name)?;
+                    // if idx + 1 < vars.len() {
+                    //     buffer.write_char('\n')?;
+                    // }
                 }
             }
-            output
-        })
+            Ok(has_written)
+        }).expect("Unable to generate pretty string for pts.");
+        buffer
     }
 } 

@@ -46,8 +46,13 @@ impl ProgramTreeStructure {
         self.lookup_table.get_at_point(addr).copied()
     }
 
-    pub fn pretty_print<F>(&self, f:&F) -> String where F:Fn(SingleEntrySingleExit<Address>, &str) -> String  {
-        draw_pts(self.root, &self.tree, f, 0)
+    /// The closure needs to output if it has written anything to the buffer
+    pub fn pretty_print<F, W>(&self, buffer:&mut W, f:&F) -> std::fmt::Result
+    where 
+        F:Fn(&mut W, u8, SingleEntrySingleExit<Address>) -> Result<bool, std::fmt::Error>,
+        W:std::fmt::Write
+    {
+        draw_pts(buffer, self.root, &self.tree, f, 0)
     }
 }
 
@@ -195,46 +200,31 @@ where N: Copy + Eq + std::hash::Hash + std::fmt::Debug
     (largest, pts)
 }
 
-pub fn draw_pts<N, F>(root:SingleEntrySingleExit<N>, pts:&HashMap<SingleEntrySingleExit<N>, Vec<SingleEntrySingleExit<N>>>, additional:&F, depth:u8) -> String
+/// The closure needs to output if it has written anything to the buffer
+pub fn draw_pts<W, N, F>(buffer:&mut W, root:SingleEntrySingleExit<N>, pts:&HashMap<SingleEntrySingleExit<N>, Vec<SingleEntrySingleExit<N>>>, additional:&F, depth:u8) -> std::fmt::Result
 where 
     N: std::fmt::Debug + std::hash::Hash + Eq + Copy,
-    F: Fn(SingleEntrySingleExit<N>, &str) -> String
+    W: std::fmt::Write,
+    F: Fn(&mut W, u8, SingleEntrySingleExit<N>) -> Result<bool, std::fmt::Error>
 {
-    let mut tab_prefix = String::with_capacity((depth*2) as usize);
-    for _ in 0..(depth*2) { // 2 spaces per depth
-        tab_prefix.push(' ');
-    }
+    let tab_prefix = " ".repeat((depth*2) as usize);
 
-    let mut output = format!("{tab_prefix}{root:?} {{");
-    tab_prefix.push(' ');
-    tab_prefix.push(' ');
-    let mut has_new_line = false;
-    let s = additional(root, &tab_prefix);
-    if s.len() > 0 {
-        output.push('\n');
-        has_new_line = true;
-        output.push_str(&s);
-        output.push('\n');
-    }
+    write!(buffer, "{tab_prefix}{root:?} {{")?;
+    let has_written = additional(buffer, (1+depth)*2, root)?;
+
     if let Some(children) = pts.get(&root) {
         for child in children {
-            let sub = draw_pts(*child, pts, additional, depth+1);
-            if sub.len() > 0 {
-                if !has_new_line {
-                    output.push('\n');
-                }
-                output.push_str(&sub);
-                output.push('\n');
-                has_new_line = true;
-            }
+            draw_pts(buffer, *child, pts, additional, depth+1)?;
         }
     }
-    tab_prefix.pop();
-    tab_prefix.pop();
-    if has_new_line {
-        output.push_str(&format!("{tab_prefix}}}"));
-    } else {
-        output.push_str("}");
+
+    if has_written {
+        write!(buffer, "{tab_prefix}")?;
     }
-    output
+    write!(buffer, "}}")?;
+    if depth > 0 {
+        buffer.write_char('\n')
+    } else {
+        Ok(())
+    }
 }
