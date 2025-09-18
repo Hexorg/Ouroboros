@@ -434,8 +434,11 @@ dependencies = [
  "enumset",
  "iced-x86",
  "nodit",
+ "pcode",
  "petgraph",
  "rayon",
+ "sleigh-compile",
+ "sleigh-runtime",
 ]
 
 [[package]]
@@ -2397,6 +2400,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
+name = "pcode"
+version = "0.2.0"
+source = "git+https://github.com/icicle-emu/icicle-emu#ebb9bd196946a072b6887ba9313392302e6f514a"
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2837,6 +2845,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde-xml-rs"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb3aa78ecda1ebc9ec9847d5d3aba7d618823446a049ba2491940506da6e2782"
+dependencies = [
+ "log",
+ "serde",
+ "thiserror 1.0.69",
+ "xml-rs",
+]
+
+[[package]]
 name = "serde_derive"
 version = "1.0.219"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2890,6 +2910,33 @@ name = "slab"
 version = "0.4.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a2ae44ef20feb57a68b23d846850f861394c2e02dc425a50098ae8c90267589"
+
+[[package]]
+name = "sleigh-compile"
+version = "0.3.0"
+source = "git+https://github.com/icicle-emu/icicle-emu#ebb9bd196946a072b6887ba9313392302e6f514a"
+dependencies = [
+ "pcode",
+ "serde",
+ "serde-xml-rs",
+ "serde_derive",
+ "sleigh-parse",
+ "sleigh-runtime",
+]
+
+[[package]]
+name = "sleigh-parse"
+version = "0.3.0"
+source = "git+https://github.com/icicle-emu/icicle-emu#ebb9bd196946a072b6887ba9313392302e6f514a"
+
+[[package]]
+name = "sleigh-runtime"
+version = "0.1.0"
+source = "git+https://github.com/icicle-emu/icicle-emu#ebb9bd196946a072b6887ba9313392302e6f514a"
+dependencies = [
+ "pcode",
+ "sleigh-parse",
+]
 
 [[package]]
 name = "slotmap"

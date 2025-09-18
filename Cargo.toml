@@ -18,3 +18,7 @@ petgraph = "0.8.2"
 rayon = "=1.10.0"
 
 sleigh-runtime = { git = "https://github.com/icicle-emu/icicle-emu" }
+sleigh-compile = { git = "https://github.com/icicle-emu/icicle-emu" }
+pcode = { git = "https://github.com/icicle-emu/icicle-emu" }
+# icicle-vm = { git = "https://github.com/icicle-emu/icicle-emu" }
+#target-lexicon = "0.12.14"
