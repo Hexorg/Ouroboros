@@ -3,10 +3,17 @@ use std::sync::Arc;
 
 use nodit::{InclusiveInterval, Interval, NoditMap};
 use nodit::interval::ie;
-use iced_x86::{Code, Decoder, DecoderOptions, Formatter, Instruction, NasmFormatter, OpKind, Register, SymbolResolver};
+use pcode::Block;
+use sleigh_compile::ldef::SleighLanguage;
+use sleigh_runtime::{Decoder, Instruction};
 
-use crate::ir::{AbstractSyntaxTree, Address, BasicBlock, BlockStorage, Expression, HighFunction};
-use crate::symbol_resolver::{RefSymbolTable, SymbolTable};
+use crate::ir::{
+    address::Address, 
+    basic_block::BlockStorage, 
+    high_function::HighFunction, 
+    abstract_syntax_tree::AbstractSyntaxTree
+};
+use crate::symbol_resolver::SymbolTable;
 
 pub enum DataKind{
 
@@ -47,24 +54,26 @@ pub struct Memory<'s>{
     /// All decompiled functions
     pub ast:HashMap<Address, AbstractSyntaxTree>,
     /// Global symbols
-    pub symbols: SymbolTable, // Need Arc to feed it to iced_x86 disassembly formatter
+    pub symbols: SymbolTable,
 }
 
 impl<'s> LiteralState<'s> {
-    pub fn from_machine_code(bytes:&'s [u8], bitness:u32, ip:u64) -> Self {
-        let mut decoder =
-            Decoder::with_ip(bitness, bytes, ip, DecoderOptions::NONE);
+    pub fn from_machine_code(bytes:&'s [u8], base_addr:u64, lang:&SleighLanguage) -> Self {
+        let mut decoder = Decoder::new();
         let mut instrs = Vec::new();
-        while decoder.can_decode() {
-            let i = decoder.decode();
-            if i.is_invalid() {
-                break;
-            } else {
-                instrs.push(i);
-            }
+
+        decoder.global_context = lang.initial_ctx;
+        decoder.set_inst(base_addr, bytes);
+
+        let mut instr = Instruction::default();
+
+        while lang.sleigh.decode_into(&mut decoder, &mut instr).is_some() && ((instr.inst_next - base_addr) as usize) <= bytes.len() {
+            let i = std::mem::take(&mut instr);
+            decoder.set_inst(i.inst_next, &bytes[(i.inst_next - base_addr) as usize..]);
+            instrs.push(i);
         }
-        let bytes = &bytes[0..(decoder.ip()-ip) as usize];
-        Self { addr:ip.into(), bytes, kind: LiteralKind::Instruction(instrs)}
+        
+        Self { addr:base_addr.into(), bytes, kind: LiteralKind::Instruction(instrs)}
     }
 
     pub fn get_interval(&self) -> Interval<Address> {
@@ -83,7 +92,7 @@ impl<'s> Memory<'s> {
     pub fn new() -> Self {
         Self { 
             literal: NoditMap::new(), 
-            ir: NoditMap::new(), 
+            ir: BlockStorage::new(), 
             functions:HashMap::new(),
             ast: HashMap::new(),
             symbols:SymbolTable::new(), 

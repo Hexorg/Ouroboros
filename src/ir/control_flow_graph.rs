@@ -2,15 +2,18 @@ use std::{collections::{HashMap, HashSet},  ops::Deref};
 
 use enumset::{EnumSet, EnumSetType};
 
-use crate::ir::{basic_block::NextBlock, Expression};
+use crate::ir::{basic_block::{BlockIdentifier, BlockSlot, DestinationKind, NextBlock}, Expression};
 
 use super::{Address, BlockStorage};
 
 use petgraph::{algo::{dijkstra, dominators::{simple_fast as build_dominators, Dominators}}, csr::DefaultIx, prelude::{EdgeRef, StableGraph}, visit::{IntoEdgeReferences, IntoNeighbors, IntoNodeReferences}};
 use egui_graphs::Graph as EguiGraph;
 
-pub type Graph = petgraph::csr::Csr<Address, LinkKind>;
+pub type Graph = petgraph::csr::Csr<BlockIdentifier, LinkKind>;
 
+
+/// From Wikipedia: [Single-entry single-exit](https://en.wikipedia.org/wiki/Single-entry_single-exit) region
+/// in a given graph is an ordered edge pair.
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
 pub struct SingleEntrySingleExit<N>(pub N, pub N);
 
@@ -24,7 +27,7 @@ pub enum CFGProperties {
 
 #[derive(Clone)]
 pub enum LinkKind {
-    Calls(Expression),
+    Calls(DestinationKind),
     TrueBranch(Expression),
     FalseBranch(Expression),
     Unconditional,
@@ -46,11 +49,12 @@ impl std::fmt::Display for LinkKind {
 
 
 pub struct ControlFlowGraph{
-    pub start:Address,
-    pub ends:Vec<Address>,
-    graph_map:HashMap<Address, DefaultIx>,
+    pub start:BlockSlot,
+    pub ends:Vec<BlockSlot>,
+    graph_map:HashMap<BlockSlot, DefaultIx>,
     forward_graph: Graph,
-    pub distance_to_return:HashMap<Address, u32>,
+    pdom_end: BlockSlot,
+    pub distance_to_return:HashMap<BlockSlot, u32>,
     pub properties: EnumSet<CFGProperties>,
     pub dom: Dominators<DefaultIx>,
     pub pdom: Dominators<DefaultIx>,
@@ -185,32 +189,34 @@ pub fn is_reachable(graph:&Graph, start:DefaultIx, target:DefaultIx) -> bool {
 
 impl ControlFlowGraph {
     pub fn new(start:Address, blocks:&BlockStorage) -> Self {
-        let mut graph_map: HashMap<Address, DefaultIx> = HashMap::new();
+        let mut graph_map: HashMap<BlockSlot, DefaultIx> = HashMap::new();
         let mut ends = Vec::new();
         let mut forward_graph:Graph = Graph::new();
         let mut backward_graph:Graph = Graph::new();
+        let start = blocks.slot_by_address(start).expect("No IR at address");
+        for block_id in blocks.iter_function(start) {
+            let node_index = *graph_map.entry(block_id).or_insert_with(|| {forward_graph.add_node(blocks[block_id].identifier); backward_graph.add_node(blocks[block_id].identifier)});
+            graph_map.insert(block_id, node_index);
 
-        for block in blocks.get_at_point(start).expect("No IR at address").iter_function(blocks) {
-            let node_index = *graph_map.entry(block.address).or_insert_with(|| {forward_graph.add_node(block.address); backward_graph.add_node(block.address)});
-            graph_map.insert(block.address, node_index);
-
-            if block.is_return() {
-                ends.push(block.address);
+            if blocks[block_id].is_return() {
+                ends.push(block_id);
             }
             
-            for nbr in block.iter_neighbors(blocks) {
-                let link_kind = match &block.next {
+            for nbr in blocks.iter_neighbors(block_id) {
+                let link_kind = match &blocks[block_id].next {
                     NextBlock::Call { destination, .. } => LinkKind::Calls(destination.clone()),
-                    NextBlock::ConditionalJump { condition, true_branch, .. } => if nbr.address == *true_branch {
-                        LinkKind::TrueBranch(condition.clone())
-                    } else {
-                        LinkKind::FalseBranch(condition.clone())
+                    NextBlock::Jump { condition, true_branch, .. } => {
+                        if blocks.slot_by_destination(true_branch) == Some(nbr) {
+                            LinkKind::TrueBranch(condition.clone())
+                        } else {
+                            LinkKind::FalseBranch(condition.clone())
+                        }
                     },
-                    NextBlock::Return | NextBlock::ReturnDifferentSite(_) => LinkKind::Return,
-                    NextBlock::Unconditional(_) => LinkKind::Unconditional
+                    NextBlock::Return  => LinkKind::Return,
+                    NextBlock::Follow(_) => LinkKind::Unconditional
                 };
 
-                let nbr_index = *graph_map.entry(nbr.address).or_insert_with(|| {forward_graph.add_node(nbr.address); backward_graph.add_node(nbr.address)});
+                let nbr_index = *graph_map.entry(nbr).or_insert_with(|| {forward_graph.add_node(blocks[nbr].identifier); backward_graph.add_node(blocks[nbr].identifier)});
                 forward_graph.add_edge(node_index, nbr_index, link_kind.clone());
                 backward_graph.add_edge(nbr_index, node_index, link_kind);
             }
@@ -218,13 +224,15 @@ impl ControlFlowGraph {
 
         
         let mut properties = EnumSet::new();
-        let mut pdom_end = Address::NULL;
+        let pdom_end;
         if ends.len() == 0 {
+            pdom_end = blocks.next_available_id();
             properties.insert(CFGProperties::NeverReturns);
         } else if ends.len() > 1 {
+            pdom_end = blocks.next_available_id();
             properties.insert(CFGProperties::MultipleReturns);
-            forward_graph.add_node(pdom_end);
-            let return_node = backward_graph.add_node(Address::NULL);
+            forward_graph.add_node(BlockIdentifier::Unset);
+            let return_node = backward_graph.add_node(BlockIdentifier::Unset);
             graph_map.insert(pdom_end, return_node);
             for end in &ends {
                 // edges.push((end.0, 0));
@@ -235,6 +243,7 @@ impl ControlFlowGraph {
             pdom_end = ends[0];
         }
 
+        // if this fails at graph_map.get that's because function never returns. What to do in that case?
         let distance_to_return = dijkstra(&backward_graph, *graph_map.get(&pdom_end).unwrap(), None, |e| {
             match e.weight() {
                 LinkKind::Calls(_) |
@@ -243,7 +252,7 @@ impl ControlFlowGraph {
                 LinkKind::TrueBranch(_) |
                 LinkKind::FalseBranch(_) => 1,
             }
-        }).iter().map(|(k, v)| (backward_graph[*k], *v)).collect::<HashMap<Address, u32>>();
+        }).iter().map(|(k, v)| (if let Some(slot) = blocks.slot_by_identifier(backward_graph[*k]) { (slot, *v)} else { (BlockSlot::default(), u32::MAX)})).collect::<HashMap<BlockSlot, u32>>();
         
 
         let dom = build_dominators(&forward_graph, *graph_map.get(&start).unwrap());
@@ -254,6 +263,7 @@ impl ControlFlowGraph {
             ends, 
             graph_map,
             forward_graph,
+            pdom_end,
             distance_to_return,
             properties, 
             dom,
@@ -261,17 +271,13 @@ impl ControlFlowGraph {
         }
     }
 
-    pub fn single_end(&self) -> Address {
-        if self.properties.contains(CFGProperties::MultipleReturns) {
-            Address(0)
-        } else {
-            // TODO: Handle functions that don't return.
-            self.ends[0]
-        }
+    #[inline]
+    pub fn single_end(&self) -> BlockSlot {
+        self.pdom_end
     }
 
-    pub fn get_node_idx(&self, addr:Address) -> DefaultIx {
-        self.graph_map[&addr]
+    pub fn get_node_idx(&self, index:BlockSlot) -> DefaultIx {
+        self.graph_map[&index]
     }
 
 }
@@ -280,120 +286,83 @@ impl ControlFlowGraph {
 mod test {
     use petgraph::{algo::dominators::simple_fast, csr::DefaultIx};
     
-    use crate::ir::least_common_ancestor;
-
-    use super::{Address, Graph};
+    use super::{Address, Graph, least_common_ancestor};
 
 
-    /// Graph from [Wikipedia](https://en.wikipedia.org/wiki/Dominator_(graph_theory))
-    /// ```
-    ///    0
-    ///    |
-    ///  /--1----\
-    ///  |  | \   5
-    ///  2  3  ^
-    ///   \ | /
-    ///     4
-    /// ```
-    /// Returns (start, end, forward_graph, reverse_graph)
-    fn wiki_graph() -> (DefaultIx, DefaultIx, Graph, Graph) {
-        let edges = Vec::from([(0, 1), (1, 2), (1, 3), (1, 5), (2, 4), (3, 4), (4, 1)]);
-        let mut graph = Graph::new();
-        let mut pgraph = Graph::new();
-        for _ in 0..6 { graph.add_node(Address::NULL); pgraph.add_node(Address::NULL); }
-        for (a, b) in edges {
-            graph.add_edge(a, b, super::LinkKind::Return);
-            pgraph.add_edge(b, a, super::LinkKind::Return);
-        }
-        (
-            0,
-            5,
-            graph,
-            pgraph
-        )
-    }
-
-    /// ```
-    /// 0
-    /// |
-    /// 1 --\
-    /// |    3--\
-    /// 2-\  |  7
-    /// | |  6  | 
-    /// 4 5   \ |
-    /// | /     9
-    /// 8      /
-    ///  \    /
-    ///    \ /
-    ///     10
-    /// ```
-    /// Returns (start, end, forward_graph, reverse_graph)
-    fn complex_graph() -> (DefaultIx, DefaultIx, Graph, Graph) {
-        let edges = Vec::from([(0, 1), (1, 2), (2, 4), (2, 5), (4, 8), (5, 8), (1, 3), (3, 6), (3, 7), (6, 9), (7, 9), (8, 10), (9, 10)]);
-        let mut graph = Graph::new();
-        let mut pgraph = Graph::new();
-        for _ in 0..11 { graph.add_node(Address::NULL); pgraph.add_node(Address::NULL); }
-        for (a, b) in edges {
-            graph.add_edge(a, b, super::LinkKind::Return);
-            pgraph.add_edge(b, a, super::LinkKind::Return);
-        }
-        (
-            0,
-            10,
-            graph,
-            pgraph
-        )
-    }
-
-
-    #[test]
-    fn test_lca() {
-        let (start, end, graph, pgraph) = wiki_graph();
-
-        let dom = simple_fast(&graph, start);
-        let pdom = simple_fast(&pgraph, end);
-
-        println!("{dom:?}");
-
-        let addr = least_common_ancestor(2, 3, start, &dom);
-        assert_eq!(addr, Some(1));
-
-        let addr = least_common_ancestor(2, 3, end, &pdom);
-        assert_eq!(addr, Some(4));
-    }
-
-    // #[test]
-    // fn test_sese_pairs() {
-    //     let (start, end, graph, pgraph) = complex_graph();
-
-    //     let dom = build_dominators(&graph, start);
-    //     let pdom = build_dominators(&pgraph, end);
-
-    //     println!("DOM: {dom:?}");
-
-    //     let seses = make_sese_pairs(&dom, &pdom, &graph, start, end);
-    //     for sese in &seses {
-    //         println!("{sese:?}");
+    // /// Graph from [Wikipedia](https://en.wikipedia.org/wiki/Dominator_(graph_theory))
+    // /// ```
+    // ///    0
+    // ///    |
+    // ///  /--1----\
+    // ///  |  | \   5
+    // ///  2  3  ^
+    // ///   \ | /
+    // ///     4
+    // /// ```
+    // /// Returns (start, end, forward_graph, reverse_graph)
+    // fn wiki_graph() -> (DefaultIx, DefaultIx, Graph, Graph) {
+    //     let edges = Vec::from([(0, 1), (1, 2), (1, 3), (1, 5), (2, 4), (3, 4), (4, 1)]);
+    //     let mut graph = Graph::new();
+    //     let mut pgraph = Graph::new();
+    //     for _ in 0..6 { graph.add_node(Address::NULL); pgraph.add_node(Address::NULL); }
+    //     for (a, b) in edges {
+    //         graph.add_edge(a, b, super::LinkKind::Return);
+    //         pgraph.add_edge(b, a, super::LinkKind::Return);
     //     }
-    //     assert_eq!(seses, Vec::from([
-    //         // SingleEntrySingleExit(0, 10),
-    //         SingleEntrySingleExit(1, 10),
-    //         SingleEntrySingleExit(2, 8),
-    //         SingleEntrySingleExit(3, 9),
-    //         ]))
+    //     (
+    //         0,
+    //         5,
+    //         graph,
+    //         pgraph
+    //     )
     // }
 
+    // /// ```
+    // /// 0
+    // /// |
+    // /// 1 --\
+    // /// |    3--\
+    // /// 2-\  |  7
+    // /// | |  6  | 
+    // /// 4 5   \ |
+    // /// | /     9
+    // /// 8      /
+    // ///  \    /
+    // ///    \ /
+    // ///     10
+    // /// ```
+    // /// Returns (start, end, forward_graph, reverse_graph)
+    // fn complex_graph() -> (DefaultIx, DefaultIx, Graph, Graph) {
+    //     let edges = Vec::from([(0, 1), (1, 2), (2, 4), (2, 5), (4, 8), (5, 8), (1, 3), (3, 6), (3, 7), (6, 9), (7, 9), (8, 10), (9, 10)]);
+    //     let mut graph = Graph::new();
+    //     let mut pgraph = Graph::new();
+    //     for _ in 0..11 { graph.add_node(Address::NULL); pgraph.add_node(Address::NULL); }
+    //     for (a, b) in edges {
+    //         graph.add_edge(a, b, super::LinkKind::Return);
+    //         pgraph.add_edge(b, a, super::LinkKind::Return);
+    //     }
+    //     (
+    //         0,
+    //         10,
+    //         graph,
+    //         pgraph
+    //     )
+    // }
+
+
     // #[test]
-    // fn test_sese_pairs_wiki() {
+    // fn test_lca() {
     //     let (start, end, graph, pgraph) = wiki_graph();
 
-    //     let dom = build_dominators(&graph, start);
-    //     let pdom = build_dominators(&pgraph, end);
+    //     let dom = simple_fast(&graph, start);
+    //     let pdom = simple_fast(&pgraph, end);
 
-    //     let seses = make_sese_pairs(&dom, &pdom, &graph, start, end);
-    //     assert_eq!(seses, Vec::from([
-    //         SingleEntrySingleExit(1, 5),
-    //         SingleEntrySingleExit(1, 4),
-    //         ]))
+    //     println!("{dom:?}");
+
+    //     let addr = least_common_ancestor(2, 3, start, &dom);
+    //     assert_eq!(addr, Some(1));
+
+    //     let addr = least_common_ancestor(2, 3, end, &pdom);
+    //     assert_eq!(addr, Some(4));
     // }
 }

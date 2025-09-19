@@ -1,50 +1,62 @@
-// mod listing;
-
-mod test;
-mod symbol_resolver;
-mod memory;
 mod ir;
+mod memory;
+mod symbol_resolver;
+mod test;
 
-use egui::{Key, };
+use egui::Key;
 
 mod tab_viewer;
-use iced_x86::Register;
-// use listing::Listing;
 
 use eframe::egui;
 
 use egui_dock::{DockArea, DockState, NodeIndex, Style, SurfaceIndex};
 
-use crate::{ir::{lift, Address, Expression, ExpressionOp, HighFunction, VariableDefinition, VariableSymbol}, memory::{LiteralState, Memory}, symbol_resolver::SymbolTable, tab_viewer::{BlockGraph, BlockView, Decompiler, SignalKind, TabKind, TabSignals, TabViewer}};
-
-
+use ir::{
+    address::Address,
+    expression::{Expression, ExpressionOp, VariableSymbol},
+    high_function::HighFunction,
+};
+use memory::{LiteralState, Memory};
+use sleigh_compile::ldef::SleighLanguage;
+use symbol_resolver::SymbolTable;
+use tab_viewer::{BlockGraph, BlockView, Decompiler, SignalKind, TabKind, TabSignals, TabViewer};
 
 struct DecompilerApp<'s> {
     memory: Memory<'s>,
-    current_function:Option<Address>,
+    current_function: Option<Address>,
     signals: TabSignals,
+    lang: SleighLanguage,
     tree: DockState<TabKind>,
-    buttons: [(&'static str, TabKind); 3]
+    buttons: [(&'static str, TabKind); 3],
 }
 
 fn main() -> eframe::Result {
-    ir::lift_with_sleigh(test::EXAMPLE_CODE_RIP, test::EXAMPLE_CODE);
-    // env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
+    // ir::lift_with_sleigh(test::EXAMPLE_CODE_RIP, test::EXAMPLE_CODE);
+    // env_lo::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1280., 768.0]),
         ..Default::default()
     };
     let mut memory = Memory::new();
-    let state = LiteralState::from_machine_code(test::EXAMPLE_CODE, test::EXAMPLE_CODE_BITNESS, test::EXAMPLE_CODE_RIP);
-    let ir = lift(state.get_instructions());
+    let lang = sleigh_compile::SleighLanguageBuilder::new(
+        "./Ghidra/Processors/x86/data/languages/x86.ldefs",
+        "x86:LE:32:default",
+    )
+    .build()
+    .unwrap();
+    let state = LiteralState::from_machine_code(test::EXAMPLE_CODE, test::EXAMPLE_CODE_RIP, &lang);
+
     let f_start = Address(test::EXAMPLE_CODE_RIP);
-    memory.literal.insert_strict(state.get_interval(), state).unwrap();
-    memory.ir = ir;
+    memory.ir = ir::lift(state.get_instructions(), &lang);
+    memory
+        .literal
+        .insert_strict(state.get_interval(), state)
+        .unwrap();
 
-
-    let hf = HighFunction::from_mem(f_start, &memory);
+    let hf = HighFunction::from_mem(f_start, &memory, &lang);
     hf.fill_global_symbols(&mut memory);
-    
+    let ast = hf.build_ast(&memory, &lang);
+
     // memory.symbols.add(test::EXAMPLE_CODE_RIP, "openPAK".to_owned());
     // memory.symbols.add(0x611084, "pakFilename".to_owned());
     // memory.symbols.add(0x669218, "pakFilename2".to_owned());
@@ -58,7 +70,6 @@ fn main() -> eframe::Result {
     // memory.symbols.add(0x4BCDD0, "_strncpy".to_owned());
     // memory.symbols.add(0x668F94, "pakFlags".to_owned());
     // memory.symbols.add(0x668fcc, "isDebugPak".to_owned());
-
 
     // memory.symbols.add(0x4A1220, "close_last_open_fd_if_no_error".to_owned());
     // memory.symbols.add(0x4B0760, "setPalData".to_owned());
@@ -78,35 +89,31 @@ fn main() -> eframe::Result {
     // memory.symbols.add(0x4a2e80, "SET_PAK_RELATED_TO_NULL".to_owned());
     // memory.symbols.add(0x4a14f0, "seek_file".to_owned());
 
+    // let mut ast = hf.build_ast(&memory, &lang);
 
-    let mut ast = hf.build_ast(&memory);
-    
+    // let var_esp = Expression::from(VariableSymbol::Register(Register::ESP));
 
-    let var_esp = Expression::from(VariableSymbol::Register(Register::ESP));
+    // let mut param_1 = var_esp.clone();
+    // param_1.add_value(4);
+    // param_1.dereference();
 
-    let mut param_1 = var_esp.clone();
-    param_1.add_value(4);
-    param_1.dereference();
+    // let mut param_2 = var_esp.clone();
+    // param_2.add_value(8);
+    // param_2.dereference();
 
-    let mut param_2 = var_esp.clone();
-    param_2.add_value(8);
-    param_2.dereference();
+    // let mut param_3 = var_esp;
+    // param_3.add_value(12);
+    // param_3.dereference();
 
-    let mut param_3 = var_esp;
-    param_3.add_value(12);
-    param_3.dereference();
-
-    let stack_4 = VariableSymbol::Ram(Expression::from(vec![ExpressionOp::Variable(VariableSymbol::Register(Register::ESP)), ExpressionOp::Value(4), ExpressionOp::Add(0, 1)]));
-    let stack_8 = VariableSymbol::Ram(Expression::from(vec![ExpressionOp::Variable(VariableSymbol::Register(Register::ESP)), ExpressionOp::Value(8), ExpressionOp::Add(0, 1)]));
-    let stack_12 = VariableSymbol::Ram(Expression::from(vec![ExpressionOp::Variable(VariableSymbol::Register(Register::ESP)), ExpressionOp::Value(12), ExpressionOp::Add(0, 1)]));
-    ast.scope.add(hf.pts.root, stack_4.clone(), VariableDefinition::new(ir::VariableType::Pointer(Box::new(ir::VariableType::Char)), "filename_a".to_owned(), stack_4));
-    ast.scope.add(hf.pts.root, stack_8.clone(), VariableDefinition::new(ir::VariableType::Pointer(Box::new(ir::VariableType::Char)), "filename_b".to_owned(), stack_8));
-    ast.scope.add(hf.pts.root, stack_12.clone(), VariableDefinition::new(ir::VariableType::Pointer(Box::new(ir::VariableType::Char)), "filename_c".to_owned(), stack_12));
+    // let stack_4 = VariableSymbol::Ram(Expression::from(vec![ExpressionOp::Variable(VariableSymbol::Register(Register::ESP)), ExpressionOp::Value(4), ExpressionOp::Add(0, 1)]));
+    // let stack_8 = VariableSymbol::Ram(Expression::from(vec![ExpressionOp::Variable(VariableSymbol::Register(Register::ESP)), ExpressionOp::Value(8), ExpressionOp::Add(0, 1)]));
+    // let stack_12 = VariableSymbol::Ram(Expression::from(vec![ExpressionOp::Variable(VariableSymbol::Register(Register::ESP)), ExpressionOp::Value(12), ExpressionOp::Add(0, 1)]));
+    // ast.scope.add(hf.pts.root, stack_4.clone(), VariableDefinition::new(ir::VariableType::Pointer(Box::new(ir::VariableType::Char)), "filename_a".to_owned(), stack_4));
+    // ast.scope.add(hf.pts.root, stack_8.clone(), VariableDefinition::new(ir::VariableType::Pointer(Box::new(ir::VariableType::Char)), "filename_b".to_owned(), stack_8));
+    // ast.scope.add(hf.pts.root, stack_12.clone(), VariableDefinition::new(ir::VariableType::Pointer(Box::new(ir::VariableType::Char)), "filename_c".to_owned(), stack_12));
 
     memory.ast.insert(f_start, ast);
     memory.functions.insert(f_start, hf);
-
-    
 
     eframe::run_native(
         "Ouroboros",
@@ -114,45 +121,40 @@ fn main() -> eframe::Result {
         Box::new(|cc| {
             let style = &cc.egui_ctx.style();
             let buttons = [
-            ("Listing", TabKind::ASM(BlockView::new(style, &memory))),
-            ("Decompiler", TabKind::Decompiler(Decompiler::new(style))),
-            ("Block Graph", TabKind::BlockGraph(BlockGraph::new())),
+                ("Listing", TabKind::ASM(BlockView::new(style, &memory))),
+                ("Decompiler", TabKind::Decompiler(Decompiler::new(style))),
+                ("Block Graph", TabKind::BlockGraph(BlockGraph::new())),
             ];
 
-
             let mut tree = DockState::new(vec![TabKind::ASM(BlockView::new(style, &memory))]);
-            tree.split((SurfaceIndex(0), NodeIndex(0)), egui_dock::Split::Right, 0.5, egui_dock::Node::leaf(TabKind::Decompiler(Decompiler::new(style))));
+            tree.split(
+                (SurfaceIndex(0), NodeIndex(0)),
+                egui_dock::Split::Right,
+                0.5,
+                egui_dock::Node::leaf(TabKind::Decompiler(Decompiler::new(style))),
+            );
 
-
-            
-
-            Ok(Box::new(DecompilerApp{
+            Ok(Box::new(DecompilerApp {
                 current_function: Some(f_start),
                 memory,
                 tree,
-                signals:TabSignals::new(),
+                lang,
+                signals: TabSignals::new(),
                 buttons,
             }))
         }),
     )
 }
 
-
-
-
-
-
 impl<'s> eframe::App for DecompilerApp<'s> {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::TopBottomPanel::top("menu_panel").show(ctx, |panel| {
             let menu_bar = egui::MenuBar::new().ui(panel, |ui| {
                 let file = ui.menu_button("File", |file_ui| {
-                    
                     let open = file_ui.button("Open...");
                     if open.clicked() || file_ui.ctx().input(|i| i.key_pressed(Key::O)) {
                         println!("Open file");
                     }
-                    
                 });
                 // if ui.ctx().input(|i| i.key_pressed(Key::F)) {
                 //     file.response.request_focus();
@@ -160,13 +162,15 @@ impl<'s> eframe::App for DecompilerApp<'s> {
                 // }
                 ui.menu_button("Windows", |windows_ui| {
                     let style = windows_ui.style();
-                    
+
                     for (name, tab) in &self.buttons {
                         if windows_ui.button(*name).clicked() {
                             if let Some(index) = self.tree.find_tab_from(|p| p == tab) {
                                 self.tree.set_active_tab(index);
                             } else {
-                                self.tree.main_surface_mut().push_to_focused_leaf(tab.clone());
+                                self.tree
+                                    .main_surface_mut()
+                                    .push_to_focused_leaf(tab.clone());
                             }
                         }
                     }
@@ -174,13 +178,18 @@ impl<'s> eframe::App for DecompilerApp<'s> {
             });
             menu_bar.response.ctx.enable_accesskit();
         });
-        egui::TopBottomPanel::bottom("status_bar").show(ctx,|panel| {
+        egui::TopBottomPanel::bottom("status_bar").show(ctx, |panel| {
             panel.label("Status bar...");
         });
 
         self.signals.new_frame();
-        
-        let mut tab_viewer = TabViewer::new(&self.memory, self.current_function, &mut self.signals);
+
+        let mut tab_viewer = TabViewer::new(
+            &self.memory,
+            self.current_function,
+            &mut self.signals,
+            &self.lang,
+        );
         DockArea::new(&mut self.tree)
             .style(Style::from_egui(ctx.style().as_ref()))
             .show(ctx, &mut tab_viewer);
@@ -190,20 +199,23 @@ impl<'s> eframe::App for DecompilerApp<'s> {
             match signal {
                 RequestPos(_) => (),
                 RenameSymbol(var, name) => {
-                    self.memory.symbols.resolve_mut(var).and_then(|v| Some(v.name = name.clone())).or_else(|| {
-                        self.current_function
-                            .and_then(|f| self.memory.ast.get_mut(&f))
-                            .and_then(|ast| {
-                                let section = ast.scope.find_owning_section(var).unwrap();
-                                ast.scope.get_symbol_mut(section, var).unwrap().name = name.clone();
-                                Some(())
-                    })
-                    });
-                },
+                    self.memory
+                        .symbols
+                        .resolve_mut(var)
+                        .and_then(|v| Some(v.name = name.clone()))
+                        .or_else(|| {
+                            self.current_function
+                                .and_then(|f| self.memory.ast.get_mut(&f))
+                                .and_then(|ast| {
+                                    let section = ast.scope.find_owning_section(var).unwrap();
+                                    ast.scope.get_symbol_mut(section, var).unwrap().name =
+                                        name.clone();
+                                    Some(())
+                                })
+                        });
+                }
                 a => println!("Process signal: {a:?}"),
             }
         }
-
     }
-    
 }

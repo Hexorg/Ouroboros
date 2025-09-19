@@ -1,40 +1,15 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
-use iced_x86::*;
-
-use crate::ir::{Expression, VariableDefinition, VariableSymbol, VariableType};
+use crate::ir::{
+    address::Address, 
+    basic_block::DestinationKind,
+    expression::{Expression, ExpressionOp, VariableSymbol},
+    scope::VariableDefinition,
+    type_system::VariableType
+};
 
 pub struct SymbolTable {
-    pub map: HashMap<u64, VariableDefinition>
-}
-
-pub struct RefSymbolTable(Arc<SymbolTable>);
-
-impl SymbolResolver for RefSymbolTable {
-    fn symbol(
-            &mut self, instruction: &Instruction, operand: u32, instruction_operand: Option<u32>, address: u64, address_size: u32,
-        ) -> Option<SymbolResult<'_>> {
-        if let Some(symbol_string) = self.0.map.get(&address) {
-            // The 'address' arg is the address of the symbol and doesn't have to be identical
-            // to the 'address' arg passed to symbol(). If it's different from the input
-            // address, the formatter will add +N or -N, eg. '[rax+symbol+123]'
-            Some(SymbolResult::with_str(address, symbol_string.name.as_str()))
-        } else {
-            None
-        }
-    }
-}
-
-impl Into<RefSymbolTable> for Arc<SymbolTable> {
-    fn into(self) -> RefSymbolTable {
-        RefSymbolTable(self.clone())
-    }
-}
-
-impl RefSymbolTable {
-    pub fn new(st: Arc<SymbolTable>) -> Self {
-        st.into()
-    }
+    pub map: HashMap<Address, VariableDefinition>
 }
 
 impl SymbolTable {
@@ -42,22 +17,49 @@ impl SymbolTable {
         Self { map: HashMap::new() }
     }
 
-    pub fn add(&mut self, address:u64, symbol:String) {
+    pub fn add<A:Into<Address>>(&mut self, address:A, size:u8, symbol:String) {
+        let address = address.into();
         self.map.insert(address, VariableDefinition { 
             kind: VariableType::default(), 
             name: symbol, 
-            variable: VariableSymbol::Ram(Expression::new()) });
+            variable: VariableSymbol::Ram(Box::new(Expression::from(address)), size)});
     }
 
     pub fn resolve(&self, e:&VariableSymbol) -> Option<&VariableDefinition> {
-        self.map.get(&e.get_memory_address_or_null())
+        match e {
+            VariableSymbol::Varnode(_) |
+            VariableSymbol::CallResult{..} => None,
+            VariableSymbol::Ram(e, _) => self.resolve_exp(e),
+        }
     }
 
     pub fn resolve_mut(&mut self, e:&VariableSymbol) ->Option<&mut VariableDefinition> {
-        self.map.get_mut(&e.get_memory_address_or_null())
+        match e {
+            VariableSymbol::Varnode(_) |
+            VariableSymbol::CallResult{..} => None,
+            VariableSymbol::Ram(e, _) => {
+                get_expresson_value_or_dereference_value(e, e.get_entry_point()).and_then(|addr| self.map.get_mut(&addr))
+            }
+        }
     }
 
     pub fn resolve_exp(&self, e:&Expression) -> Option<&VariableDefinition> {
-        self.map.get(&e.get_memory_address_or_null())
+        get_expresson_value_or_dereference_value(e, e.get_entry_point()).and_then(|addr| self.map.get(&addr))
+    }
+
+    pub fn resolve_destination(&self, dst:&DestinationKind) -> Option<&VariableDefinition> {
+        match dst {
+            DestinationKind::Symbolic(e) => self.resolve_exp(e),
+            DestinationKind::Concrete(address) => self.map.get(&address),
+            DestinationKind::Virtual(_,_) => None,
+        }
+    }
+}
+
+fn get_expresson_value_or_dereference_value(e:&Expression, pos:usize) -> Option<Address> {
+    match &e[pos] {
+        ExpressionOp::Value(v) => Some(Address(*v)),
+        ExpressionOp::Dereference(pos) => get_expresson_value_or_dereference_value(e, *pos),
+        _ => None,
     }
 }

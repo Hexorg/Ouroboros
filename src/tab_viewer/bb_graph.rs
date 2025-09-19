@@ -6,7 +6,7 @@ use egui_graphs::{
 };
 use petgraph::{csr::DefaultIx, prelude::StableGraph, Directed};
 
-use crate::{ir::{Address, BasicBlock}, memory::Memory, tab_viewer::{draw_bb, TabSignals}};
+use crate::{ir::{address::Address, basic_block::{BasicBlock, BlockIdentifier, BlockSlot}}, memory::Memory, tab_viewer::{draw_bb, TabSignals}};
 
 pub type FunctGraphView<'a> = GraphView<
     'a,
@@ -67,7 +67,7 @@ impl BlockGraph {
                     if let Some(pos) = signals.is_requested_pos() {
                         let hf = mem.functions.get(&current_function.unwrap()).unwrap();
                         // todo!("Convert arbitrary addresses to CFG node addresses.");
-                        let idx = hf.cfg.get_node_idx(pos);
+                        let idx = hf.cfg.get_node_idx(hf.composed_blocks.slot_by_address(pos).unwrap());
                         let node = g.node(idx.into()).unwrap();
                         let pos = node.display().pos;
                         let min = Pos2::new(pos.x - 1.0, pos.y - 1.0);
@@ -94,7 +94,12 @@ impl BlockGraph {
                         if let Some(n) = g.hovered_node() {
                             if let Some(addr) = current_function {
                                 let hf = mem.functions.get(&addr).unwrap();
-                                signals.request_pos(hf.cfg[n.index() as u32]);
+                                match hf.cfg[n.index() as u32] {
+                                    BlockIdentifier::Unset => (),
+                                    BlockIdentifier::Physical(interval) => signals.request_pos(interval.start()),
+                                    BlockIdentifier::Virtual(address, _) => signals.request_pos(address),
+                                }
+                                ;
                             }
                         }
                     }

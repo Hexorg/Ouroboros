@@ -1,637 +1,478 @@
 //! The process of lifting code from machine code to C-like:
-//! 
-//! * For each defined function, convert machine code to [`BasicBlock`], where each block tracks symbolic state of execution.
-//! * Compose [`BasicBlock`]s together as-if executing the function. Execute only 1 round of loops.
-//! * Generate [`ControlFlowGraph`] by treating [`BasicBlock`]s as nodes.
-//! * Perform dominance and post-dominance analysis of basic blocks to generate [`SingleEntrySingleExit`] (SESE) pairs of the graph
-//! * Use SESE pairs to generate [`ProgramTreeStructure`] - which SESEs are nested within other SESEs. This allows us 
+//!
+//! * Create [`sleigh_compile::SleighLanguageBuilder`] from Ghidra's Processor definition files.
+//! * Convert machine code to PCode intermediate representation ([`sleigh_runtime::Instruction`]), using [`from_machine_code`]
+//! * Convert PCode blocks to [`BasicBlock`]s by using [`PCodeToBasicBlocks`].
+//!     - *Note:* one PCode block may yield 2 or more [`BasicBlock`]s, but only for some instructions.
+//! * For each defined function:
+//!     - Compose [`BasicBlock`]s together as-if executing the function. Execute only 1 round of loops.
+//!     - Generate [`ControlFlowGraph`] by treating [`BasicBlock`]s as nodes.
+//!     - Perform dominance and post-dominance analysis of basic blocks to generate [`SingleEntrySingleExit`] (SESE) pairs of the graph
+//!     - Use SESE pairs to generate [`ProgramTreeStructure`] - which SESEs are nested within other SESEs. This allows us
 //! to decide when to omit else statements in if-else blocks, when to use switch/case or loops.
-//! * Traverse [`BasicBlock`]s in the SESE order - outer to inner, generating [`AST`] - Abstract Syntax Tree of the logic.
-//! * Use [`ProgramTreeStructure`] to keep track of the scope of variables for each program block. 
-//! 
+//!     - Traverse [`BasicBlock`]s in the SESE order - outer to inner, generating [`AbstractSyntaxTree`] of the logic.
+//!     - Use [`ProgramTreeStructure`] to keep track of the scope of variables for each program block.
+//!
 
-use std::{collections::HashMap, fmt::Write, hash::Hash, ops::Add};
+use std::collections::{HashMap, HashSet};
 
-use iced_x86::{Code, Decoder, Instruction, OpKind, Register};
-use nodit::{interval::ie, Interval, NoditMap, OverlapError};
-use sleigh_runtime::{Decoder as SleighDecoder, Instruction as SleighInstruction, Lifter, SleighData, SubtableCtx};
+use nodit::interval::ie;
+use sleigh_compile::ldef::SleighLanguage;
+use sleigh_runtime::{Decoder, Instruction, Lifter as InstructionToPCode};
 
-use crate::symbol_resolver::SymbolTable;
+pub mod abstract_syntax_tree;
+pub mod address;
+pub mod basic_block;
+pub mod control_flow_graph;
+pub mod expression;
+pub mod high_function;
+pub mod program_tree_structure;
+pub mod scope;
+pub mod type_system;
 
+use address::Address;
+use basic_block::{
+    BasicBlock, BlockIdentifier, BlockSlot, BlockStorage, CpuState, DestinationKind,
+};
+use expression::{Expression, ExpressionOp, VariableSymbol};
 
-mod expression;
-mod address;
-mod basic_block;
-mod control_flow_graph;
-mod utils;
-mod high_function;
-mod abstract_syntax_tree;
-mod program_tree_structure;
-mod scope;
-mod type_system;
+use crate::ir::basic_block::NextBlock;
 
-pub use expression::{Expression, ExpressionOp, VariableSymbol};
-pub use address::Address;
-pub use basic_block::BasicBlock;
-pub use utils::*;
-pub use control_flow_graph::*;
-pub use scope::*;
-pub use high_function::HighFunction;
-pub use abstract_syntax_tree::{AbstractSyntaxTree, AstStatement};
-pub use type_system::VariableType;
-
-pub type BlockStorage = NoditMap<Address, Interval<Address>, BasicBlock>;
-
-fn op_to_expression(mut state:Option<&mut BasicBlock>, instr:&Instruction, op_index:u8, ) -> Expression {
-    let (kind, reg) = match op_index {
-        0 => {(
-            instr.op0_kind(),
-            instr.op0_register()
-        )},
-        1 => {(
-            instr.op1_kind(),
-            instr.op1_register()
-        )},
-        _ => panic!("Unsupported op count!")
-    };
-    match kind {
-        OpKind::Register => state.and_then(|s| Some(s.get_register_state(reg).clone())).unwrap_or(Expression::from(reg)),
-        OpKind::Memory => {
-            let mut base = if instr.memory_base() != Register::None {
-                state.as_mut().and_then(|s| Some(s.get_register_state(instr.memory_base()).clone())).unwrap_or(Expression::from(reg)) 
-            } else {
-                Expression::from(0)
-            };
-
-            let displacement = match instr.memory_displ_size() {
-                4 => instr.memory_displacement32() as i64,
-                _ => instr.memory_displacement64() as i64,
-                // n => todo!("Unexpected memory displacement size {n}.")
-            };
-            
-            if instr.memory_base().is_ip() {
-                Expression::from(displacement)
-            } else {
-                if instr.memory_index() != Register::None {
-                    let mut scale_reg = state.and_then(|s| Some(s.get_register_state(instr.memory_index()).clone())).unwrap_or(Expression::from(reg));
-                    let index = if instr.memory_index_scale() == 1 {
-                        scale_reg
-                    } else {
-                        let scale_size = Expression::from(instr.memory_index_scale() as i64);
-                        scale_reg.multiply(&scale_size);
-                        scale_reg
-                    };
-                    base.add(&index);
-                }
-                base.add_value(displacement);
-                base.dereference();
-                base
-            }
-        },
-        OpKind::Immediate32to64 => {
-            Expression::from(instr.immediate64() as i64)
-        },
-        OpKind::Immediate32 => {
-            Expression::from(instr.immediate32() as i64)
-        }
-        OpKind::Immediate8to32 => {
-            Expression::from(instr.immediate8to32() as i64)
-        }
-        OpKind::Immediate8 => {
-            Expression::from(instr.immediate8() as i64)
-        }
-        _ => todo!("Unexpected op0 kind: {kind:?}")
-    }
-}
-
-
-fn panic_with_interval_info<'a>(blocks:&'a BlockStorage) -> impl FnOnce(OverlapError<BasicBlock>) + use<'a> {
-    |e:OverlapError<BasicBlock>| {
-        let mut s = format!("{e:?}:\n");
-        for (_, block) in blocks.overlapping(e.value.get_interval()) {
-            s.write_fmt(format_args!("\t{block:?}\n")).unwrap();
-        }
-        panic!("{s}")
-    }
-}
-
-pub fn lift(instr:&[Instruction]) -> BlockStorage {
-    let mut blocks = BlockStorage::new();
-    let mut current_block = BasicBlock::new();
-    for instruction in instr {
-        let ip = instruction.ip();
-        let ipa = Address(ip);
-        if current_block.address == Address::NULL {
-            current_block.address = ipa;
-        }
-        if blocks.contains_point(ipa) {
-            // the reason blocks already contains this point is because other block jumps here
-            if blocks.get_at_point(ipa).unwrap().address == current_block.address {
-                // remove_overlapping first removes everything. No need to consume iterator just to remove.
-                _ = blocks.remove_overlapping(ie(ipa, Address(ipa.0 + 2)));
-            } else {
-                current_block.next = basic_block::NextBlock::Unconditional(ipa);
-                blocks.insert_strict(current_block.get_interval(), current_block).unwrap_or_else(panic_with_interval_info(&blocks));
-                current_block = BasicBlock::new();
-                current_block.address = ipa;
-                _ = blocks.remove_overlapping(ie(ipa, Address(ipa.0 + 2)));
-            }
-        }
-        current_block.end = instruction.next_ip().into();
-    
-    
-        match instruction.code() {
-            Code::Mov_r32_rm32 | Code::Mov_r32_imm32 | Code::Mov_EAX_moffs32=> {
-                let mut left = op_to_expression(None, instruction, 0);
-                let right = op_to_expression(Some(&mut current_block),instruction, 1);
-
-                let target = left.get_destination_register();
-                current_block.set_register_state(target, right.clone());
-
-                left.assign(&right);
-                current_block.instruction_map.insert(ipa, left);
-            },
-            Code::Mov_rm32_imm32 | Code::Mov_rm32_r32 | Code::Mov_moffs32_EAX => {
-                let mut left = op_to_expression(Some(&mut current_block), instruction, 0);
-                let right = op_to_expression(Some(&mut current_block),instruction, 1);
-
-                let mut result = left.clone();
-                result.assign(&right);
-
-                left.cancel_dereference();
-                current_block.set_memory_state(left, right);
-
-                current_block.instruction_map.insert(ipa, result);
-            },
-            Code::Add_rm32_imm8 | Code::Add_rm32_imm32=> {
-                let target = op_to_expression(None, instruction, 0).get_destination_register();
-                let mut left = op_to_expression(Some(&mut current_block), instruction, 0);
-                let right = op_to_expression(Some(&mut current_block),instruction, 1).get_value();
-
-                left.add_value(right);
-                let mut result = Expression::from(target);
-                result.assign(&left);
-                
-                current_block.instruction_map.insert(ipa, result);
-                current_block.set_register_state(target, left);
-            },
-            Code::Add_r32_rm32 | Code::Add_EAX_imm32=> {
-                let target = op_to_expression(None, instruction, 0).get_destination_register();
-                let mut left = op_to_expression(Some(&mut current_block), instruction, 0);
-                let right = op_to_expression(Some(&mut current_block), instruction, 1);
-                left.add(&right);
-                let mut result = Expression::from(target);
-                result.assign(&left);
-                current_block.instruction_map.insert(ipa, result);
-                current_block.set_register_state(target, left);
-            },
-            Code::Sub_rm32_imm32  | Code::Sub_r32_rm32 => {
-                let mut target = op_to_expression(None, instruction, 0);
-                let reg = target.get_destination_register();
-                let mut left = op_to_expression(Some(&mut current_block), instruction, 0);
-                let right = op_to_expression(Some(&mut current_block),instruction, 1);
-                left.sub(&right);
-                target.assign(&left);
-                current_block.instruction_map.insert(ipa, target);
-                current_block.set_register_state(reg, left);
-
-            },
-            Code::Push_r32 | Code::Pushd_imm32 | Code::Pushd_imm8 => {
-                let pushed_value = op_to_expression(Some(&mut current_block), instruction, 0);
-                let esp = Register::ESP;
-                let esp_state = current_block.get_register_state(esp).clone();
-                let mut new_esp_state = esp_state.clone();
-                new_esp_state.sub_value(4);
-
-                let mut instruction_result = esp_state.clone();
-                instruction_result.dereference();
-                instruction_result.assign(&pushed_value);
-
-                
-                current_block.instruction_map.insert(ipa, instruction_result);
-                current_block.set_memory_state(esp_state, pushed_value);
-                
-                current_block.set_register_state(esp, new_esp_state);
-            },
-
-            Code::Pop_r32 => {
-                let pop_destination = op_to_expression(None, instruction, 0).get_destination_register();
-                let mut esp_state = current_block.get_register_state(Register::ESP).clone();
-                let memory_state = current_block.get_memory_state(esp_state.clone()).clone();
-
-
-                esp_state.add_value(4);
-                let mut instruction_result = Expression::from(pop_destination);
-                instruction_result.assign(&memory_state);
-
-                current_block.set_register_state(Register::ESP, esp_state);
-                current_block.instruction_map.insert(ipa, instruction_result);
-                current_block.set_register_state(pop_destination, memory_state);
-            },
-            Code::Lea_r32_m => {
-                let destination = op_to_expression(None, instruction, 0).get_destination_register();
-                let mut value = op_to_expression(Some(&mut current_block),instruction, 1);
-                value.cancel_dereference();
-                
-                let mut instruction_result = Expression::from(destination);
-                instruction_result.assign(&value);
-
-                current_block.instruction_map.insert(ipa, instruction_result);
-                current_block.set_register_state(destination, value);
-            },
-
-            Code::Xor_r32_rm32 => {
-                let left = op_to_expression(None, instruction, 0).get_destination_register();
-                let right = op_to_expression(None, instruction, 1).get_destination_register();
-                if left == right {
-                    let mut instruction_result = Expression::from(left);
-                    instruction_result.assign_value(0);
-                    current_block.instruction_map.insert(ipa, instruction_result);
-                    current_block.set_register_state(left, 0);
-                } else {
-                    todo!("Make XOR")
-                }
-            },
-            Code::Shr_rm32_imm8 => {
-                let mut instruction_result = op_to_expression(None, instruction, 0);
-                let register = instruction_result.get_destination_register();
-                let mut left = op_to_expression(Some(&mut current_block), instruction, 0);
-                let right = op_to_expression(None, instruction, 1).get_value();
-                left.bit_shift_right(right);
-                
-                instruction_result.assign(&left);
-                current_block.instruction_map.insert(ipa, instruction_result);
-                current_block.set_register_state(register, left);
-            },
-            Code::And_rm32_imm8 => {
-                let mut instruction_result = op_to_expression(None, instruction, 0);
-                let register = instruction_result.get_destination_register();
-                let mut left = op_to_expression(Some(&mut current_block), instruction, 0);
-                let right = op_to_expression(None, instruction, 1).get_value();
-                left.and(right);
-                
-                instruction_result.assign(&left);
-                current_block.instruction_map.insert(ipa, instruction_result);
-                current_block.set_register_state(register, left);
-            }
-
-            Code::Inc_rm32 => {
-                let mut addr = op_to_expression(Some(&mut current_block), instruction, 0);
-                let mut value = current_block.get_memory_state(addr.clone()).clone();
-                value.add_value(1);
-                let mut instruction_result = addr.clone();
-                instruction_result.assign(&value);
-
-        
-                current_block.instruction_map.insert(ipa, instruction_result);
-                addr.cancel_dereference();
-                current_block.set_memory_state(addr, value);
-
-
-            },
-            Code::Stosd_m32_EAX => {
-                // Store ECX-count dwords of whatever is in EAX into pointer starting at EDI
-                current_block.next = basic_block::NextBlock::Unconditional(ipa);
-                current_block.end = ipa;
-                blocks.insert_strict(current_block.get_interval(), current_block).unwrap_or_else(panic_with_interval_info(&blocks));
-
-                let mut loop_block = BasicBlock::new();
-                loop_block.address = ipa;
-                loop_block.end = instruction.next_ip().into();
-                let eax = Expression::from(VariableSymbol::Register(Register::EAX));
-                let mut ecx = Expression::from(VariableSymbol::Register(Register::ECX));
-                let mut edi = Expression::from(VariableSymbol::Register(Register::EDI));
-                
-                loop_block.next = basic_block::NextBlock::ConditionalJump { 
-                    condition: ecx.clone(), 
-                    true_branch: ipa, 
-                    false_branch: instruction.next_ip().into()
-                };
-
-                loop_block.set_memory_state(edi.clone(), eax.clone());
-                edi.add_value(4);
-                loop_block.set_register_state(Register::EDI, edi);
-                ecx.sub_value(1);
-                loop_block.set_register_state(Register::ECX, ecx);
-
-                blocks.insert_strict(loop_block.get_interval(), loop_block).unwrap_or_else(panic_with_interval_info(&blocks));
-                
-
-                current_block = BasicBlock::new();
-            },
-            Code::Stosb_m8_AL => {
-                // Store ECX-count bytes of whatever is in AL into pointer starting at EDI
-                current_block.next = basic_block::NextBlock::Unconditional(ipa);
-                current_block.end = ipa;
-                blocks.insert_strict(current_block.get_interval(), current_block).unwrap_or_else(panic_with_interval_info(&blocks));
-
-                let mut loop_block = BasicBlock::new();
-                loop_block.address = ipa;
-                loop_block.end = instruction.next_ip().into();
-                let al = Expression::from(VariableSymbol::Register(Register::EAX)); // TODO: Reason about AL vs AX vs EAX
-                let mut ecx = Expression::from(VariableSymbol::Register(Register::ECX));
-                let mut edi = Expression::from(VariableSymbol::Register(Register::EDI));
-                
-                loop_block.next = basic_block::NextBlock::ConditionalJump { 
-                    condition: ecx.clone(), 
-                    true_branch: ipa, 
-                    false_branch: instruction.next_ip().into()
-                };
-
-                loop_block.set_memory_state(edi.clone(), al.clone());
-                edi.add_value(1);
-                loop_block.set_register_state(Register::EDI, edi);
-                ecx.sub_value(1);
-                loop_block.set_register_state(Register::ECX, ecx);
-
-                blocks.insert_strict(loop_block.get_interval(), loop_block).unwrap_or_else(panic_with_interval_info(&blocks));
-                
-
-                current_block = BasicBlock::new();
-            },
-            Code::Movsd_m32_m32 => {
-                // Store ECX-count dwords from DS:[ESI] to ES:[EDI]
-                current_block.next = basic_block::NextBlock::Unconditional(ipa);
-                current_block.end = ipa;
-                blocks.insert_strict(current_block.get_interval(), current_block).unwrap_or_else(panic_with_interval_info(&blocks));
-
-                let mut loop_block = BasicBlock::new();
-                loop_block.address = ipa;
-                loop_block.end = instruction.next_ip().into();
-                let mut esi = Expression::from(VariableSymbol::Register(Register::ESI));
-                let mut ecx = Expression::from(VariableSymbol::Register(Register::ECX));
-                let mut edi = Expression::from(VariableSymbol::Register(Register::EDI));
-                
-                // loop_block.next = Expression::from(instruction.next_ip() as i64);
-                // loop_block.conditional_jump = Some((ecx.clone(), loop_block.address));
-                loop_block.next = basic_block::NextBlock::ConditionalJump { 
-                    condition: ecx.clone(), 
-                    true_branch: ipa, 
-                    false_branch: instruction.next_ip().into()
-                };
-
-                loop_block.set_memory_state(edi.clone(), esi.clone());
-                edi.add_value(4);
-                esi.add_value(4);
-                loop_block.set_register_state(Register::EDI, edi);
-                loop_block.set_register_state(Register::ESI, esi);
-                ecx.sub_value(1);
-                loop_block.set_register_state(Register::ECX, ecx);
-
-                blocks.insert_strict(loop_block.get_interval(), loop_block).unwrap_or_else(panic_with_interval_info(&blocks));
-                
-
-                current_block = BasicBlock::new();
-            },
-            Code::Movsb_m8_m8 => {
-                // Store ECX-count bytes from DS:[ESI] to ES:[EDI]
-                current_block.next = basic_block::NextBlock::Unconditional(ipa);
-                current_block.end = ipa;
-                blocks.insert_strict(current_block.get_interval(), current_block).unwrap_or_else(panic_with_interval_info(&blocks));
-
-                let mut loop_block = BasicBlock::new();
-                loop_block.address = ipa;
-                loop_block.end = instruction.next_ip().into();
-                let mut esi = Expression::from(VariableSymbol::Register(Register::ESI));
-                let mut ecx = Expression::from(VariableSymbol::Register(Register::ECX));
-                let mut edi = Expression::from(VariableSymbol::Register(Register::EDI));
-                
-                loop_block.next = basic_block::NextBlock::ConditionalJump { 
-                    condition: ecx.clone(), 
-                    true_branch: ipa, 
-                    false_branch: instruction.next_ip().into()
-                };
-
-                loop_block.set_memory_state(edi.clone(), esi.clone()); // TODO: Only 1 byte is copied
-                edi.add_value(1);
-                esi.add_value(1);
-                loop_block.set_register_state(Register::EDI, edi);
-                loop_block.set_register_state(Register::ESI, esi);
-                ecx.sub_value(1);
-                loop_block.set_register_state(Register::ECX, ecx);
-
-                blocks.insert_strict(loop_block.get_interval(), loop_block).unwrap_or_else(panic_with_interval_info(&blocks));
-                
-
-                current_block = BasicBlock::new();
-            },
-            Code::Cmp_r32_rm32 | Code::Cmp_rm32_r32 => {
-                let mut left = op_to_expression(Some(&mut current_block), instruction, 0);
-                let right = op_to_expression(Some(&mut current_block),instruction, 1);
-
-                left.sub(&right);
-                
-                current_block.instruction_map.insert(ipa, left.clone());
-                current_block.next = basic_block::NextBlock::ConditionalJump { condition: left, true_branch: Address::NULL, false_branch: Address::NULL };
-            },
-            Code::Cmp_EAX_imm32 | Code::Cmp_rm32_imm8 => {
-                let mut left = op_to_expression(Some(&mut current_block), instruction, 0);
-                let right = op_to_expression(Some(&mut current_block),instruction, 1).get_value();
-
-                left.sub_value(right);
-                current_block.instruction_map.insert(ipa, left.clone());
-                current_block.next = basic_block::NextBlock::ConditionalJump { condition: left, true_branch: Address::NULL, false_branch: Address::NULL };
-            },
-            Code::Test_rm32_r32 => {
-                let left = op_to_expression(Some(&mut current_block), instruction, 0);
-                let right = op_to_expression(Some(&mut current_block),instruction, 1);
-                if left == right {
-                    current_block.next = basic_block::NextBlock::ConditionalJump { condition: left, true_branch: Address::NULL, false_branch: Address::NULL };
-                } else {
-                    todo!("Implement Expression::AND")
-                }
-            },
-            Code::Call_rel32_32 | Code::Call_rm32 => {
-                let call_site = match instruction.op0_kind() {
-                    OpKind::NearBranch32 => {
-                        Expression::from(instruction.near_branch32() as i64)
-                    },
-                    OpKind::Memory => {
-                        op_to_expression(Some(&mut current_block), instruction, 0)
-                    }
-                    _ => todo!("Unexpected call kind: {:?}", instruction.op0_kind())
-                };
-
-                current_block.next = basic_block::NextBlock::Call { origin: ipa, destination: call_site, return_instruction:instruction.next_ip().into() };
-                blocks.insert_strict(current_block.get_interval(), current_block).unwrap_or_else(panic_with_interval_info(&blocks));
-
-                current_block = BasicBlock::new(); 
-                // current_block.address = instruction.next_ip().into();
-                // // next block has pre-set EAX register, assuming cdecl 
-                // current_block.set_register_state(Register::EAX, VariableSymbol::CallResult{call_from:Address(instruction.ip()), call_to:call_site});
-
-            },
-            Code::Retnd => {
-                current_block.next = basic_block::NextBlock::Return;
-                blocks.insert_strict(current_block.get_interval(), current_block).unwrap_or_else(panic_with_interval_info(&blocks));
-                current_block = BasicBlock::new();
-            }
-            c @ (Code::Je_rel8_32 | Code::Jne_rel8_32 | Code::Jl_rel32_32 | Code::Ja_rel32_32) => {
-                let call_site:Address = match instruction.op0_kind() {
-                    OpKind::NearBranch32 => {
-                        instruction.near_branch32().into()
-                    },
-                    _ => todo!("Unexpected call kind: {:?}", instruction.op0_kind())
-                };
-                if let basic_block::NextBlock::ConditionalJump { mut condition,.. } = current_block.next {
-                    if let Some(block) = blocks.get_at_point(call_site) {
-                        if block.address != call_site {
-                            todo!("Jump to a middle of a defined block.")
-                        }
-                    } else {
-                        let mut true_block = BasicBlock::new();
-                        true_block.address = call_site;
-                        true_block.end = Address(call_site.0 + 1);
-                        blocks.insert_strict(true_block.get_interval(), true_block).unwrap_or_else(panic_with_interval_info(&blocks));
-                    }
-                    let mut false_condition = condition.clone();
-                    match c {
-                        Code::Je_rel8_32 => {
-                            condition.check_equals_value(0);
-                            false_condition.check_not_equals_value(0);
-                        },
-                        Code::Jne_rel8_32 => {
-                            condition.check_not_equals_value(0);
-                            false_condition.check_equals_value(0);
-                        },
-                        Code::Jl_rel32_32 => {
-                            condition.check_less_value(0);
-                            false_condition.check_greater_or_equals_value(0);
-                        },
-                        Code::Ja_rel32_32 => { // jump grater, unsigned, TODO: How to keep track of signed/unsigned/flags logic?
-                            condition.check_greater_value(0);
-                            false_condition.check_less_or_equals_value(0);
-                        },
-                        _ => panic!("Unexpected jump code")
-                    };
-
-                    let no_jump_addr:Address = instruction.next_ip().into();
-                    // current_block.conditional_jump = Some((true_branch.clone(), call_site));
-                    // current_block.next = Expression::from(no_jump_addr.0 as i64);
-                    current_block.next = basic_block::NextBlock::ConditionalJump{ 
-                        condition, 
-                        true_branch: call_site, 
-                        false_branch: no_jump_addr };
-
-                    // self.blocks.insert(call_site, jump_state);
-                    let mut no_jump_state = BasicBlock::new();
-                    no_jump_state.address = no_jump_addr;
-                    no_jump_state.end = Address(no_jump_addr.0 + 1);
-                    no_jump_state.constraints.push(false_condition);
-                    
-                    blocks.insert_strict(current_block.get_interval(), current_block).unwrap_or_else(panic_with_interval_info(&blocks));
-                    current_block = no_jump_state;
-
-                } else {
-                    panic!("Conditional jump before condition is set");
-                }
-            },
-            code => {
-                println!("Process instruction {:x}: {code:?}", instruction.ip());
-            }
-        }
-    }
-    blocks 
-}
-
-
-pub fn lift_with_sleigh(base_addr:u64, bytes:&[u8]) {
-
-    let builder = sleigh_compile::SleighLanguageBuilder::new("./Ghidra/Processors/x86/data/languages/x86.ldefs", "x86:LE:32:default");
-    let lang = builder.build().unwrap();
-    let mut decoder = SleighDecoder::new();
-    let mut lifter = Lifter::new();
+pub fn from_machine_code(bytes: &[u8], base_addr: u64, lang: &SleighLanguage) -> Vec<Instruction> {
+    let mut decoder = Decoder::new();
+    let mut instrs = Vec::new();
 
     decoder.global_context = lang.initial_ctx;
     decoder.set_inst(base_addr, bytes);
-    let mut instr = SleighInstruction::default();
-    let mut dstring = String::new();
-    let mut count = 0;
 
-    let mut my_lifter = PCodeLifter::new();
+    let mut instr = Instruction::default();
 
-    while lang.sleigh.decode_into(&mut decoder, &mut instr).is_some() && ((instr.inst_next - base_addr) as usize) < bytes.len() {
-        dstring.clear();
-        let context = instr.root(&lang.sleigh);
-
-        //test(&context, &lang.sleigh);
-        lang.sleigh.disasm_into(&instr, &mut dstring);
-
-        let pcode = lifter.lift(&lang.sleigh, &instr).unwrap();
-        println!("{:x} {dstring}", instr.inst_start);
-        my_lifter.lift_with_pcode(pcode);
-
-        decoder.set_inst(instr.inst_next, &bytes[(instr.inst_next - base_addr) as usize..]);
-
+    while lang.sleigh.decode_into(&mut decoder, &mut instr).is_some()
+        && ((instr.inst_next - base_addr) as usize) <= bytes.len()
+    {
+        let i = std::mem::take(&mut instr);
+        decoder.set_inst(i.inst_next, &bytes[(i.inst_next - base_addr) as usize..]);
+        instrs.push(i);
     }
+
+    instrs
 }
 
-fn test(ctx:&SubtableCtx, sleigh:&SleighData) {
-    use sleigh_runtime::DisplaySegment::*;
-    for segment in ctx.display_segments() {
-        match segment {
-            Literal(idx) => {
-                print!("Literal({}) ", sleigh.get_str(*idx));
-            },
-            Field(idx) => {
-                let field = ctx.fields()[*idx as usize];
-                let value = ctx.locals()[*idx as usize];
-                print!("Field ")
-
-            },
-            Subtable(idx) => {
-                print!("Subtable()")
+pub fn lift(instructions: &[Instruction], lang: &SleighLanguage) -> BlockStorage {
+    let mut pcode_lifter = InstructionToPCode::new();
+    let mut my_lifter = PCodeToBasicBlocks::new();
+    let mut dasm = String::new();
+    for instruction in instructions {
+        let pcode = pcode_lifter.lift(&lang.sleigh, instruction).unwrap();
+        my_lifter.scan_for_block_boundaries(pcode);
+    }
+    for instruction in instructions {
+        let pcode = pcode_lifter.lift(&lang.sleigh, instruction).unwrap();
+        dasm.clear();
+        lang.sleigh.disasm_into(instruction, &mut dasm);
+        // Iterpath node BlockSlot(41), 0x4b165b-0x4b1668, next: Call { origin: 0x4b1664, destination: Concrete(0x4b0760), next_block: Some(BlockSlot(41)) }
+        if instruction.inst_start >= 0x4b1583 && instruction.inst_next <= 0x4b1590 {
+            println!("0x{:x} {dasm}", instruction.inst_start);
+            for pcode in &pcode.instructions {
+                println!("\t{:?}\t{:?}", pcode.op, pcode)
             }
         }
-        println!();
+        my_lifter.lift(pcode);
+    }
+    println!("Created {} blocks", my_lifter.blocks.len());
+    my_lifter.blocks
+}
+
+struct PCodeToBasicBlocks {
+    pub blocks: BlockStorage,
+    current_block: BasicBlock,
+    current_block_start_marker: Option<Address>,
+    known_block_boundaries: HashSet<Address>,
+}
+
+fn get_state(v: pcode::Value, registers: &mut CpuState) -> Expression {
+    match v {
+        pcode::Value::Var(var_node) => registers.get_or_symbolic(var_node).clone(),
+        pcode::Value::Const(value, _size) => Expression::from(value),
     }
 }
 
-struct PCodeLifter{
-    blocks: BlockStorage,
-    current_block:BasicBlock,
-}
-
-impl PCodeLifter {
+impl PCodeToBasicBlocks {
     pub fn new() -> Self {
-        Self { blocks: BlockStorage::new(),
+        Self {
+            blocks: BlockStorage::new(),
             current_block: BasicBlock::new(),
+            current_block_start_marker: None,
+            known_block_boundaries: HashSet::new(),
         }
     }
-    fn lift_with_pcode(&mut self, pcode_block:&pcode::Block)  {
 
-        for instruction in &pcode_block.instructions {
-            match instruction.op {
-                pcode::Op::InstructionMarker => {
-                    let ip = instruction.inputs.first().as_u64();
-                    let ipa = Address(ip);
-
-                    if self.current_block.address == Address::NULL {
-                        self.current_block.address = ipa;
+    fn scan_for_block_boundaries(&mut self, pcode_block: &pcode::Block) {
+        use pcode::Op::Branch;
+        for pcode in &pcode_block.instructions {
+            match pcode.op {
+                Branch(_) => {
+                    let destination =
+                        get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                    if !destination.is_symbolic() {
+                        let dst_address: Address = destination.get_value().into();
+                        self.known_block_boundaries.insert(dst_address);
                     }
-                    if self.blocks.contains_point(ipa) {
-                        // the reason blocks already contains this point is because other block jumps here
-                        if self.blocks.get_at_point(ipa).unwrap().address == self.current_block.address {
-                            // remove_overlapping first removes everything. No need to consume iterator just to remove.
-                            _ = self.blocks.remove_overlapping(ie(ipa, Address(ipa.0 + 2)));
-                        } else {
-                            self.current_block.next = basic_block::NextBlock::Unconditional(ipa);
-                            let block = std::mem::take(&mut self.current_block);
-                            self.blocks.insert_strict(self.current_block.get_interval(), block).unwrap_or_else(panic_with_interval_info(&self.blocks));
-                            // self.current_block = BasicBlock::new();
-                            self.current_block.address = ipa;
-                            _ = self.blocks.remove_overlapping(ie(ipa, Address(ipa.0 + 2)));
+                }
+                _ => (),
+            }
+        }
+    }
+
+    fn lift(&mut self, pcode_block: &pcode::Block) {
+        fn add_block(
+            current_block: &mut BasicBlock,
+            current_block_start_marker: &mut Option<Address>,
+            blocks: &mut BlockStorage,
+            instruction_pointer: Address,
+            next_instruction_pointer: Address,
+        ) -> BlockSlot {
+            let mut block = std::mem::take(current_block);
+            let start = std::mem::take(current_block_start_marker);
+            block.clear_temporary_registers();
+            if let Some(start_addr) = start {
+                let interval = ie(start_addr, next_instruction_pointer);
+                block.identifier = BlockIdentifier::Physical(interval);
+
+                blocks.insert(block)
+            } else {
+                block.identifier = BlockIdentifier::Virtual(
+                    instruction_pointer,
+                    blocks.next_available_multiblock_id_at_address(instruction_pointer),
+                );
+                blocks.insert(block)
+            }
+        }
+
+        let mut instruction_pointer = Address::NULL;
+        let mut next_instruction_pointer = Address::NULL;
+        let mut last_added_block = None;
+
+        // Map of block id to lookup and u16 lable to insert into true branch
+        let mut blocks_to_patch_jump: HashMap<BlockSlot, u16> = HashMap::new();
+        // map of u16 lables to destination block ids
+        let mut pcode_label_map: HashMap<u16, u8> = HashMap::new();
+
+        use expression::SignedOrUnsiged::*;
+        use pcode::Op::*;
+
+        for pcode in &pcode_block.instructions {
+            match pcode.op {
+                InstructionMarker => {
+                    if self
+                        .known_block_boundaries
+                        .contains(&pcode.inputs.first().as_u64().into())
+                        && !self.current_block.is_new()
+                    {
+                        // print!("InstructionMarker::");
+                        self.current_block.next = basic_block::NextBlock::Follow(
+                            DestinationKind::Concrete(pcode.inputs.first().as_u64().into()),
+                        );
+                        last_added_block = Some(add_block(
+                            &mut self.current_block,
+                            &mut self.current_block_start_marker,
+                            &mut self.blocks,
+                            instruction_pointer,
+                            pcode.inputs.first().as_u64().into(),
+                        ));
+                    }
+
+                    instruction_pointer = pcode.inputs.first().as_u64().into();
+                    next_instruction_pointer =
+                        instruction_pointer + pcode.inputs.second().as_u64().into();
+
+                    if self.current_block_start_marker.is_none() {
+                        self.current_block_start_marker = Some(instruction_pointer)
+                    }
+                }
+                IntAdd => {
+                    let mut left =
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                    let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                    left.add(&right, pcode.inputs.first().size());
+
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                IntAnd => {
+                    let mut left =
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                    let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                    left.and(&right);
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                IntXor => {
+                    if pcode.inputs.first() == pcode.inputs.second() {
+                        self.current_block
+                            .registers
+                            .set_state(pcode.output, Expression::from(0))
+                    } else {
+                        todo!("Handle proper XOR")
+                    }
+                }
+                IntCountOnes => {
+                    let mut left =
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                    left.count_ones();
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                Load(space) => {
+                    let addr = get_state(pcode.inputs.first(), &mut self.current_block.registers);
+
+                    assert!(pcode.inputs.second().is_invalid());
+                    let value = match space {
+                        pcode::RAM_SPACE => self
+                            .current_block
+                            .get_memory_state(addr, pcode.inputs.first().size()),
+                        pcode::REGISTER_SPACE => {
+                            self.current_block.registers.get_or_symbolic(pcode.output)
+                        }
+                        a => todo!("Unsupported memory space {a}"),
+                    }
+                    .clone();
+                    let mut assignment =
+                        Expression::from(ExpressionOp::DestinationRegister(pcode.output));
+                    assignment.assign(&value);
+                    self.current_block
+                        .key_instructions
+                        .insert(instruction_pointer, assignment);
+                    self.current_block.registers.set_state(pcode.output, value);
+                }
+                Store(space) => {
+                    let addr = get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                    let value = get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                    self.current_block.memory_writes.insert(addr.clone());
+
+                    let mut assignment = addr.clone();
+                    assignment.assign(&value);
+                    self.current_block
+                        .key_instructions
+                        .insert(instruction_pointer, assignment);
+
+                    match space {
+                        pcode::RAM_SPACE => self.current_block.set_memory_state(addr, value),
+                        a => todo!("Unsupported memory space {a}"),
+                    }
+                }
+                Copy => {
+                    let state = get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                    self.current_block.registers.set_state(pcode.output, state);
+                }
+                IntLess => {
+                    let mut left =
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                    let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                    left.check_less(&right, pcode.inputs.first().size(), Unsigned);
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                IntSignedLess => {
+                    let mut left =
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                    let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                    left.check_less(&right, pcode.inputs.first().size(), Signed);
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                IntSignedBorrow => {
+                    let mut left =
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                    let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                    left.sub(&right, pcode.inputs.first().size());
+                    left.overflow(Signed);
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                IntCarry => {
+                    let mut left =
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                    let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                    left.add(&right, pcode.inputs.first().size());
+                    left.overflow(Unsigned);
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                IntSignedCarry => {
+                    let mut left =
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                    let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                    left.add(&right, pcode.inputs.first().size());
+                    left.overflow(Signed);
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                IntSub => {
+                    let mut left =
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                    let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                    left.sub(&right, pcode.inputs.first().size());
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                IntMul => {
+                    let mut left =
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                    let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                    left.multiply(&right, pcode.inputs.first().size());
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                IntEqual => {
+                    let mut left =
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                    let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                    left.check_equals(&right, pcode.inputs.first().size(), Unsigned);
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                IntRight => {
+                    let mut left =
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                    let right = get_state(pcode.inputs.second(), &mut self.current_block.registers)
+                        .get_value();
+                    left.bit_shift_right(right, pcode.inputs.first().size());
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                BoolNot | IntNot | IntNotEqual => {
+                    let mut left =
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                    let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                    left.check_equals(&right, pcode.inputs.first().size(), Unsigned);
+                    left.not();
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                IntOr | BoolOr => {
+                    let mut left =
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                    let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                    left.or(&right);
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                PcodeBranch(lbl) => {
+                    let condition =
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                    // lbl will map to BlockId, but we may not know this id yet.
+                    let false_branch = DestinationKind::Virtual(
+                        instruction_pointer,
+                        self.blocks
+                            .next_available_multiblock_id_at_address(instruction_pointer)
+                            + 1,
+                    ); // just next available one is our own
+                    self.current_block.next = basic_block::NextBlock::Jump {
+                        condition,
+                        true_branch: DestinationKind::Virtual(instruction_pointer, 0),
+                        false_branch,
+                    };
+                    // print!("PcodeBranch::");
+                    self.current_block_start_marker = None;
+                    let id = add_block(
+                        &mut self.current_block,
+                        &mut self.current_block_start_marker,
+                        &mut self.blocks,
+                        instruction_pointer,
+                        next_instruction_pointer,
+                    );
+                    blocks_to_patch_jump.insert(id, lbl);
+                    last_added_block = Some(id);
+                }
+                PcodeLabel(lbl) => {
+                    let next = self
+                        .blocks
+                        .next_available_multiblock_id_at_address(instruction_pointer);
+                    pcode_label_map.insert(lbl, next);
+
+                    self.current_block.next =
+                        basic_block::NextBlock::Follow(DestinationKind::Virtual(
+                            instruction_pointer,
+                            self.blocks
+                                .next_available_multiblock_id_at_address(instruction_pointer),
+                        ));
+                    // print!("PcodeLabel::");
+                    last_added_block = Some(add_block(
+                        &mut self.current_block,
+                        &mut self.current_block_start_marker,
+                        &mut self.blocks,
+                        instruction_pointer,
+                        next_instruction_pointer,
+                    ));
+                }
+                ZeroExtend => {
+                    let left = get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                Branch(hint) => {
+                    let condition =
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                    if condition.is_symbolic() {
+                        self.current_block
+                            .key_instructions
+                            .insert(instruction_pointer, condition.clone());
+                    }
+                    let destination =
+                        get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                    let destination = if destination.is_symbolic() {
+                        DestinationKind::Symbolic(destination)
+                    } else {
+                        DestinationKind::Concrete(destination.get_value().into())
+                    };
+                    match hint {
+                        pcode::BranchHint::Call => {
+                            self.current_block.next = basic_block::NextBlock::Call {
+                                origin: instruction_pointer,
+                                destination,
+                                default_return: next_instruction_pointer,
+                            }
+                        }
+                        pcode::BranchHint::Jump => {
+                            // .next() because .next_available_id() is going to be our own block
+                            // let next_block = self.blocks.lookup_id(next_instruction_pointer).or_else(|| Some(self.blocks.next_available_id().next()));
+                            let false_branch = DestinationKind::Concrete(next_instruction_pointer);
+                            self.current_block.next = basic_block::NextBlock::Jump {
+                                condition,
+                                true_branch: destination,
+                                false_branch,
+                            }
+                        }
+                        pcode::BranchHint::Return => {
+                            self.current_block.next = basic_block::NextBlock::Return
                         }
                     }
-                    self.current_block.end = Address(ip + instruction.inputs.second().as_u64());
-                },
-                pcode::Op::IntAdd => {
-                    
+                    // print!("Branch::");
+                    last_added_block = Some(add_block(
+                        &mut self.current_block,
+                        &mut self.current_block_start_marker,
+                        &mut self.blocks,
+                        instruction_pointer,
+                        next_instruction_pointer,
+                    ));
                 }
-                
                 a => {
-                    todo!("Execute PCode: {a:?} {:?} = {:?}, {:?}", instruction.output, instruction.inputs.first(), instruction.inputs.second())
+                    todo!("Execute PCode: {a:?}: {pcode:?}")
                 }
+            }
+        }
+
+        if blocks_to_patch_jump.len() > 0 {
+            if let Some(last_added_block) = last_added_block {
+                match self.blocks[last_added_block].next {
+                    basic_block::NextBlock::Follow(DestinationKind::Virtual(_, _)) => {
+                        self.blocks[last_added_block].next =
+                            NextBlock::Follow(DestinationKind::Concrete(next_instruction_pointer))
+                    }
+                    _ => panic!("Unexpected virtual block end."),
+                }
+            }
+        }
+
+        for (block_id, lbl) in blocks_to_patch_jump {
+            let dst = *pcode_label_map.get(&lbl).unwrap();
+            let debug_id = self.blocks[block_id].identifier;
+            match &mut self.blocks[block_id].next {
+                basic_block::NextBlock::Jump {
+                    true_branch,
+                    false_branch,
+                    ..
+                } => match true_branch {
+                    DestinationKind::Virtual(addr, idx) => *idx = dst,
+                    _ => panic!("Unexpected destination made it into patch block list"),
+                },
+                _ => panic!("Unexpected block pactch state."),
             }
         }
     }

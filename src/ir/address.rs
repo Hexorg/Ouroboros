@@ -1,13 +1,10 @@
-use std::ops::{Add, Range, Sub};
+use std::ops::{Add, Sub};
 
-use nodit::{DiscreteFinite, PointType};
-use petgraph::csr::IndexType;
+use nodit::DiscreteFinite;
 
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Address(pub u64);
-
-pub struct AddressIterator(Address, Address);
 
 impl std::fmt::Display for Address {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -45,28 +42,8 @@ impl Default for Address {
     }
 }
 
-impl Iterator for AddressIterator {
-    type Item = Address;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.0 != self.1 {
-            self.0.0 += 1;
-            Some(self.0)
-        } else {
-            None
-        }
-    }
-}
-
 impl Address {
     pub const NULL:Self = Self(0);
-
-    fn test() {
-    let test = 0..10;
-    for i in test {
-
-    }
-    }
 }
 
 impl DiscreteFinite for Address {
