@@ -2,7 +2,6 @@ use std::ops::{Add, Sub};
 
 use nodit::DiscreteFinite;
 
-
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Address(pub u64);
 
@@ -30,6 +29,12 @@ impl Into<Address> for u32 {
     }
 }
 
+impl Into<Address> for i32 {
+    fn into(self) -> Address {
+        Address(self as u64)
+    }
+}
+
 impl Into<Address> for usize {
     fn into(self) -> Address {
         Address(self as u64)
@@ -43,34 +48,35 @@ impl Default for Address {
 }
 
 impl Address {
-    pub const NULL:Self = Self(0);
+    pub const NULL: Self = Self(0);
 }
 
 impl DiscreteFinite for Address {
-    
     const MIN: Self = Address(0);
-    
+
     const MAX: Self = Address(u64::MAX);
-    
+
     fn up(self) -> Option<Self>
-        where
-            Self: Sized {
+    where
+        Self: Sized,
+    {
         if self != Self::MAX {
-            Some(Address(self.0+1))
+            Some(Address(self.0 + 1))
         } else {
             None
         }
     }
-    
+
     fn down(self) -> Option<Self>
-        where
-            Self: Sized {
+    where
+        Self: Sized,
+    {
         if self != Self::MIN {
-            Some(Address(self.0-1))
+            Some(Address(self.0 - 1))
         } else {
             None
         }
-    } 
+    }
 }
 
 impl Add for Address {

@@ -1,29 +1,21 @@
-use std::{
-    collections::HashMap,
-    fmt::format,
-    hash::{Hash, Hasher},
-};
+use std::collections::HashMap;
 
 use eframe::egui;
 use egui::{
-    scroll_area, Color32, Grid, Id, InnerResponse, LayerId, NumExt, Rect, Response, RichText,
-    ScrollArea, Sense, Spacing, Stroke, Style, Ui, UiBuilder, Vec2,
+    Color32, Grid, InnerResponse, Response, RichText, ScrollArea, Sense, Spacing, Stroke, Style,
+    Ui, UiBuilder, Vec2,
 };
-use egui_extras::{Column, TableBuilder};
-use nodit::InclusiveInterval;
+
 use sleigh_compile::ldef::SleighLanguage;
 use sleigh_runtime::{Instruction, SubtableCtx};
 
 use super::{CodeTheme, TokenType};
 use crate::{
-    ir::{
-        address::Address, basic_block::BasicBlock, expression::Expression,
-        high_function::HighFunction,
-    },
+    ir::{address::Address, basic_block::BasicBlock, expression::Expression},
     memory::Memory,
     tab_viewer::TabSignals,
 };
-pub struct InstructionsView<'t, T> {
+pub struct InstructionBlockView<'t, T> {
     salt: T,
     theme: &'t CodeTheme,
     block: Option<&'t BasicBlock>,
@@ -128,11 +120,6 @@ fn parse_ctx(
                     }
                 } else {
                     if s.len() > 0 {
-                        let p = s
-                            .chars()
-                            .map(|c| format!("0x{:x}", c as u8))
-                            .collect::<Vec<_>>()
-                            .join(",");
                         buffer.push_str(s);
                     }
                 }
@@ -212,7 +199,7 @@ fn draw_line(
     grid.end_row();
 }
 
-impl<'t, T> InstructionsView<'t, T>
+impl<'t, T> InstructionBlockView<'t, T>
 where
     T: std::hash::Hash,
 {
@@ -274,7 +261,7 @@ where
 }
 
 #[derive(Clone)]
-pub struct BlockView {
+pub struct MemoryView {
     // pos:usize,
     theme: CodeTheme,
     addr_row_map: HashMap<Address, usize>,
@@ -289,7 +276,7 @@ pub fn draw_bb(
 ) -> InnerResponse<()> {
     let header = ui.label("Known memory state at the end of this block:");
     let width = header.rect.width();
-    Grid::new(id_salt).striped(true).show(ui, |ui| {
+    let r = Grid::new(id_salt).striped(true).show(ui, |ui| {
         for (addr, value) in &block.memory {
             ui.label(format!("{}", addr.with_sleigh_language(lang)));
             ui.label(":=");
@@ -307,10 +294,18 @@ pub fn draw_bb(
             }
             ui.end_row();
         }
-    })
+    });
+    let n = Expression::from(0);
+    let esp = block
+        .registers
+        .get(lang.sp)
+        .unwrap_or(&n)
+        .with_sleigh_language(lang);
+    ui.label(format!("ESP State: {esp}"));
+    r
 }
 
-impl BlockView {
+impl MemoryView {
     const STROKE: Stroke = Stroke {
         width: 1.0,
         color: Color32::RED,
@@ -358,10 +353,11 @@ impl BlockView {
                 while current_addr < end_addr {
                     let literal = mem.literal.get_at_point(current_addr).unwrap();
                     match &literal.kind {
-                        crate::memory::LiteralKind::Data(data_kind) => todo!(),
+                        crate::memory::LiteralKind::Data(_) => todo!(),
                         crate::memory::LiteralKind::Instruction(instructions) => {
                             let mut current_block_span: Option<&BasicBlock> = None;
-                            let mut current_function: Option<&HighFunction> = None;
+                            let current_function: Option<&Address> =
+                                mem.function_span.get_at_point(current_addr);
                             for instr in instructions {
                                 let mut should_draw = false;
                                 if instr.inst_start >= current_addr.0
@@ -370,18 +366,34 @@ impl BlockView {
                                     if let Some(block) = current_block_span {
                                         if !block.identifier.contains(instr.inst_start) {
                                             current_block_span =
-                                                mem.ir.get_by_address(instr.inst_start);
+                                                if let Some(function) = current_function {
+                                                    mem.functions
+                                                        .get(function)
+                                                        .unwrap()
+                                                        .composed_blocks
+                                                        .get_by_address(instr.inst_start)
+                                                } else {
+                                                    mem.ir.get_by_address(instr.inst_start)
+                                                };
                                             should_draw = true;
                                         }
                                     } else {
                                         current_block_span =
-                                            mem.ir.get_by_address(instr.inst_start);
+                                            if let Some(function) = current_function {
+                                                mem.functions
+                                                    .get(function)
+                                                    .unwrap()
+                                                    .composed_blocks
+                                                    .get_by_address(instr.inst_start)
+                                            } else {
+                                                mem.ir.get_by_address(instr.inst_start)
+                                            };
                                         should_draw = true;
                                     }
 
                                     if should_draw {
                                         // draw single line of the view
-                                        let r = InstructionsView::new(
+                                        let r = InstructionBlockView::new(
                                             instr.inst_start,
                                             &self.theme,
                                             current_block_span,
@@ -396,7 +408,10 @@ impl BlockView {
                                             if let (Some(bb), Some(hf)) =
                                                 (current_block_span, current_function)
                                             {
-                                                let bb = hf
+                                                let bb = mem
+                                                    .functions
+                                                    .get(hf)
+                                                    .unwrap()
                                                     .composed_blocks
                                                     .get_by_identifier(bb.identifier)
                                                     .unwrap();
@@ -420,7 +435,7 @@ fn map_addr(mem: &Memory) -> (HashMap<Address, usize>, Vec<Address>) {
     let mut ra_map = Vec::new();
     for (_, data) in mem.literal.iter() {
         match &data.kind {
-            crate::memory::LiteralKind::Data(data_kind) => todo!(),
+            crate::memory::LiteralKind::Data(_) => todo!(),
             crate::memory::LiteralKind::Instruction(instructions) => {
                 for instr in instructions {
                     let row = ar_map.len();

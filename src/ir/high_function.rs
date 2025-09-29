@@ -1,7 +1,7 @@
-use std::collections::HashSet;
-
+use nodit::{interval::ie, DiscreteFinite, InclusiveInterval, Interval, NoditMap};
 use pcode::VarNode;
 use sleigh_compile::ldef::SleighLanguage;
+use std::collections::HashSet;
 
 use super::{
     abstract_syntax_tree::AbstractSyntaxTree,
@@ -10,7 +10,7 @@ use super::{
     program_tree_structure::ProgramTreeStructure,
     Expression, ExpressionOp, VariableSymbol,
 };
-use crate::memory::Memory;
+use crate::{ir::expression::InstructionSize, memory::Memory};
 
 use super::{Address, BasicBlock};
 
@@ -133,22 +133,29 @@ impl HighFunction {
                         let mut after_call = composed_block.clone();
                         match calling_convention {
                             CallingConvention::Cdecl => {
-                                _ = after_call.registers.set_state(
-                                    lang.sleigh
-                                        .get_reg("EAX")
-                                        .and_then(|v| v.get_var())
-                                        .unwrap(),
+                                let eax = lang
+                                    .sleigh
+                                    .get_reg("EAX")
+                                    .and_then(|v| v.get_var())
+                                    .unwrap();
+                                after_call.registers.set_state(
+                                    eax,
                                     Expression::from(VariableSymbol::CallResult {
                                         call_from: *origin,
                                         call_to: Box::new(destination.clone()),
                                     }),
-                                )
+                                );
                             }
                         }
+                        // all ret instructions pop return pointer off the stack
+                        let mut esp_state = after_call.registers.get_or_symbolic(lang.sp).clone();
+                        esp_state.add_value(4, InstructionSize::U32);
+                        after_call.registers.set_state(lang.sp, esp_state);
                         neighbor_block.inherit_state_from(&after_call)
                     } else {
                         neighbor_block.inherit_state_from(composed_block)
                     };
+
                     copy_vec.push(composed);
                 }
                 while let Some(composed) = copy_vec.pop() {
@@ -214,10 +221,32 @@ impl HighFunction {
     }
 
     pub fn build_ast(&self, mem: &Memory, lang: &SleighLanguage) -> AbstractSyntaxTree {
-        let mut s = String::new();
-        self.pts.pretty_print(&mut s, &|_, _, _| Ok(false));
-        println!("{s}");
         AbstractSyntaxTree::new(self, mem, lang)
+    }
+
+    pub fn take_interval_ownership(&self, map: &mut NoditMap<Address, Interval<Address>, Address>) {
+        for block in self
+            .composed_blocks
+            .iter_function(self.composed_blocks.slot_by_address(self.start).unwrap())
+        {
+            match &self.composed_blocks[block].identifier {
+                super::basic_block::BlockIdentifier::Physical(interval) => {
+                    map.insert_merge_touching_if_values_equal(*interval, self.start)
+                        .unwrap();
+                }
+                super::basic_block::BlockIdentifier::Virtual(address, _) => {
+                    if let Err(e) = map.insert_merge_touching_if_values_equal(
+                        ie(*address, address.up().unwrap()),
+                        self.start,
+                    ) {
+                        if e.value != self.start {
+                            panic!("{e:?}")
+                        }
+                    }
+                }
+                super::basic_block::BlockIdentifier::Unset => (),
+            };
+        }
     }
 
     pub fn fill_global_symbols(&self, mem: &mut Memory) {
@@ -227,12 +256,12 @@ impl HighFunction {
         let symbols = &mut mem.symbols;
         symbols.add(self.start, 4, format!("FUN_{:X}", self.start.0));
         for e in &self.memory_read {
-            if let Some(ExpressionOp::Value(v)) = e.last_op() {
+            if let Some(ExpressionOp::Value(v)) = e.root_op() {
                 symbols.add(*v, 4, format!("DAT_{:X}", v));
             }
         }
         for e in &self.memory_written {
-            if let Some(ExpressionOp::Value(v)) = e.last_op() {
+            if let Some(ExpressionOp::Value(v)) = e.root_op() {
                 symbols.add(*v, 4, format!("DAT_{:X}", v));
             }
         }

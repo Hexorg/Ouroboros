@@ -2,19 +2,18 @@ use crate::{ir::basic_block::BlockSlot, VariableSymbol};
 use std::{borrow::Cow, collections::HashMap};
 
 use egui::{
-    text::LayoutJob, text_selection::LabelSelectionState, Color32, Frame, Grid, Id, InnerResponse,
-    Key, Label, Pos2, Rect, Response, RichText, Sense, Spacing, Stroke, Style, TextEdit, Ui, Vec2,
-    Widget,
+    Color32, Frame, InnerResponse, Key, Label, Pos2, Rect, Response, RichText, Spacing, Stroke,
+    Style, TextEdit, Ui, Vec2,
 };
 
 use crate::ir::{
-    abstract_syntax_tree::{AbstractSyntaxTree, AstStatement},
+    abstract_syntax_tree::AstStatement,
     address::Address,
     basic_block::DestinationKind,
     control_flow_graph::SingleEntrySingleExit,
     expression::{Expression, ExpressionOp},
     high_function::HighFunction,
-    scope::{Scope, VariableDefinition},
+    scope::VariableDefinition,
     type_system::VariableType,
 };
 use crate::{memory::Memory, tab_viewer::TabSignals};

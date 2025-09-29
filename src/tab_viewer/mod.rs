@@ -1,25 +1,22 @@
-use std::ops::Add;
-
-use egui::Popup;
-use egui_dock::tab_viewer::OnCloseResponse;
 use sleigh_compile::ldef::SleighLanguage;
 
 use crate::{
     ir::{address::Address, expression::VariableSymbol},
     memory::Memory,
-    DecompilerApp,
 };
 
 mod bb_graph;
 mod decompiler;
 mod instruction_view;
+// mod terminal;
 mod theme;
 
 pub use theme::{CodeTheme, TokenType};
 
 pub use bb_graph::BlockGraph;
 pub use decompiler::Decompiler;
-pub use instruction_view::{draw_bb, BlockView, InstructionsView};
+pub use instruction_view::{draw_bb, MemoryView};
+// pub use terminal::TerminalView;
 
 pub enum SignalKind {
     RequestPos(Address),
@@ -99,10 +96,10 @@ pub struct TabViewer<'m> {
 
 #[derive(Clone)]
 pub enum TabKind {
-    ASM(BlockView),
+    ASM(MemoryView),
     Decompiler(Decompiler),
     BlockGraph(BlockGraph),
-    // Terminal(Terminal),
+    // Terminal(TerminalView),
 }
 
 impl PartialEq for TabKind {
@@ -139,16 +136,17 @@ impl<'m> egui_dock::TabViewer for TabViewer<'m> {
     fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
         match tab {
             TabKind::ASM(_) => "Listing".into(),
-            TabKind::Decompiler(d) => self
+            TabKind::Decompiler(_) => self
                 .current_function
                 .map(|f| format!("Decompile: FUN_{:x}", f.0))
                 .unwrap_or("Decompile: No function".into())
                 .into(),
-            TabKind::BlockGraph(d) => self
+            TabKind::BlockGraph(_) => self
                 .current_function
                 .map(|f| format!("Block graph: FUN_{:x}", f.0))
                 .unwrap_or("Block graph: No function".into())
                 .into(),
+            // TabKind::Terminal(t) => t.title().into(),
         }
     }
 

@@ -14,17 +14,17 @@ pub enum TokenType {
 
 #[derive(Clone, Copy)]
 struct TokenStyle {
-    color:Color32,
-    strong:bool,
-    underlined:bool
+    color: Color32,
+    strong: bool,
+    underlined: bool,
 }
 
 #[derive(Clone)]
 pub struct CodeTheme {
     dark_mode: bool,
     font_id: egui::FontId,
-    formats:enum_map::EnumMap<TokenType, TokenStyle>,
-    pub highlight_color:Color32,
+    formats: enum_map::EnumMap<TokenType, TokenStyle>,
+    pub highlight_color: Color32,
 }
 impl CodeTheme {
     pub fn from_style(style: &egui::Style) -> Self {
@@ -40,7 +40,7 @@ impl CodeTheme {
         }
     }
     fn dark_with_font_id(font_id: egui::FontId) -> Self {
-        use egui::{Color32, TextFormat};
+        use egui::Color32;
         Self {
             font_id,
             dark_mode: true,
@@ -54,12 +54,12 @@ impl CodeTheme {
                 TokenType::Punctuation => TokenStyle{color:Color32::LIGHT_GRAY, strong:false, underlined:false},
                 TokenType::Whitespace => TokenStyle{color:Color32::TRANSPARENT, strong:false, underlined:false},
             ],
-            highlight_color: Color32::from_rgba_unmultiplied(255, 255, 224, 30)
+            highlight_color: Color32::from_rgba_unmultiplied(255, 255, 224, 30),
         }
     }
 
     fn light_with_font_id(font_id: egui::FontId) -> Self {
-        use egui::{Color32, TextFormat};
+        use egui::Color32;
         Self {
             font_id,
             dark_mode: false,
@@ -73,13 +73,15 @@ impl CodeTheme {
                 TokenType::Punctuation => TokenStyle{color:Color32::DARK_GRAY, strong:false, underlined:false},
                 TokenType::Whitespace => TokenStyle{color:Color32::TRANSPARENT, strong:false, underlined:false},
             ],
-            highlight_color: Color32::from_rgba_unmultiplied(40, 40, 10, 30)
+            highlight_color: Color32::from_rgba_unmultiplied(40, 40, 10, 30),
         }
     }
 
-    pub fn make_rich(&self, token:TokenType, string:impl Into<String>) -> RichText {
+    pub fn make_rich(&self, token: TokenType, string: impl Into<String>) -> RichText {
         let theme = &self.formats[token];
-        let mut r = RichText::new(string).font(self.font_id.clone()).color(theme.color);
+        let mut r = RichText::new(string)
+            .font(self.font_id.clone())
+            .color(theme.color);
         if theme.strong {
             r = r.strong()
         }

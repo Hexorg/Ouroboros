@@ -71,12 +71,12 @@ pub fn lift(instructions: &[Instruction], lang: &SleighLanguage) -> BlockStorage
         dasm.clear();
         lang.sleigh.disasm_into(instruction, &mut dasm);
         // Iterpath node BlockSlot(41), 0x4b165b-0x4b1668, next: Call { origin: 0x4b1664, destination: Concrete(0x4b0760), next_block: Some(BlockSlot(41)) }
-        if instruction.inst_start >= 0x4b1583 && instruction.inst_next <= 0x4b1590 {
-            println!("0x{:x} {dasm}", instruction.inst_start);
-            for pcode in &pcode.instructions {
-                println!("\t{:?}\t{:?}", pcode.op, pcode)
-            }
-        }
+        // if instruction.inst_start == 0x4b1504 {
+        //     println!("0x{:x} {dasm}", instruction.inst_start);
+        //     for pcode in &pcode.instructions {
+        //         println!("\t{:?}\t{:?}", pcode.op, pcode)
+        //     }
+        // }
         my_lifter.lift(pcode);
     }
     println!("Created {} blocks", my_lifter.blocks.len());
@@ -194,7 +194,17 @@ impl PCodeToBasicBlocks {
                     let mut left =
                         get_state(pcode.inputs.first(), &mut self.current_block.registers);
                     let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
+
                     left.add(&right, pcode.inputs.first().size());
+
+                    if !pcode.output.is_temp() {
+                        let mut assignment =
+                            Expression::from(ExpressionOp::DestinationRegister(pcode.output));
+                        assignment.assign(&left);
+                        self.current_block
+                            .key_instructions
+                            .insert(instruction_pointer, assignment);
+                    }
 
                     self.current_block.registers.set_state(pcode.output, left);
                 }
@@ -206,13 +216,11 @@ impl PCodeToBasicBlocks {
                     self.current_block.registers.set_state(pcode.output, left);
                 }
                 IntXor => {
-                    if pcode.inputs.first() == pcode.inputs.second() {
-                        self.current_block
-                            .registers
-                            .set_state(pcode.output, Expression::from(0))
-                    } else {
-                        todo!("Handle proper XOR")
-                    }
+                    let mut left =
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                    let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                    left.xor(&right);
+                    self.current_block.registers.set_state(pcode.output, left);
                 }
                 IntCountOnes => {
                     let mut left =
@@ -234,12 +242,14 @@ impl PCodeToBasicBlocks {
                         a => todo!("Unsupported memory space {a}"),
                     }
                     .clone();
-                    let mut assignment =
-                        Expression::from(ExpressionOp::DestinationRegister(pcode.output));
-                    assignment.assign(&value);
-                    self.current_block
-                        .key_instructions
-                        .insert(instruction_pointer, assignment);
+                    if !pcode.output.is_temp() {
+                        let mut assignment =
+                            Expression::from(ExpressionOp::DestinationRegister(pcode.output));
+                        assignment.assign(&value);
+                        self.current_block
+                            .key_instructions
+                            .insert(instruction_pointer, assignment);
+                    }
                     self.current_block.registers.set_state(pcode.output, value);
                 }
                 Store(space) => {
@@ -248,6 +258,7 @@ impl PCodeToBasicBlocks {
                     self.current_block.memory_writes.insert(addr.clone());
 
                     let mut assignment = addr.clone();
+                    assignment.dereference();
                     assignment.assign(&value);
                     self.current_block
                         .key_instructions
@@ -305,6 +316,16 @@ impl PCodeToBasicBlocks {
                         get_state(pcode.inputs.first(), &mut self.current_block.registers);
                     let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
                     left.sub(&right, pcode.inputs.first().size());
+
+                    if !pcode.output.is_temp() {
+                        let mut assignment =
+                            Expression::from(ExpressionOp::DestinationRegister(pcode.output));
+                        assignment.assign(&left);
+                        self.current_block
+                            .key_instructions
+                            .insert(instruction_pointer, assignment);
+                    }
+
                     self.current_block.registers.set_state(pcode.output, left);
                 }
                 IntMul => {
@@ -332,8 +353,6 @@ impl PCodeToBasicBlocks {
                 BoolNot | IntNot | IntNotEqual => {
                     let mut left =
                         get_state(pcode.inputs.first(), &mut self.current_block.registers);
-                    let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
-                    left.check_equals(&right, pcode.inputs.first().size(), Unsigned);
                     left.not();
                     self.current_block.registers.set_state(pcode.output, left);
                 }
@@ -420,8 +439,6 @@ impl PCodeToBasicBlocks {
                             }
                         }
                         pcode::BranchHint::Jump => {
-                            // .next() because .next_available_id() is going to be our own block
-                            // let next_block = self.blocks.lookup_id(next_instruction_pointer).or_else(|| Some(self.blocks.next_available_id().next()));
                             let false_branch = DestinationKind::Concrete(next_instruction_pointer);
                             self.current_block.next = basic_block::NextBlock::Jump {
                                 condition,

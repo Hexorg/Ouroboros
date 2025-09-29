@@ -250,7 +250,7 @@ fn define_all_variables(
         ExpressionOp::Value(_)
         | ExpressionOp::DestinationRegister(_)
         | ExpressionOp::Assign(_, _) => (),
-        ExpressionOp::Overflow(l, _) | ExpressionOp::CountOnes(l) => {
+        ExpressionOp::Overflow(l, _) | ExpressionOp::CountOnes(l) | ExpressionOp::Not(l) => {
             define_all_variables(scope, sese, expression, *l);
         }
         ExpressionOp::Multiequals(l, r)
@@ -266,6 +266,7 @@ fn define_all_variables(
         | ExpressionOp::BitShiftRight(l, r, _)
         | ExpressionOp::BitShiftLeft(l, r, _)
         | ExpressionOp::And(l, r)
+        | ExpressionOp::Xor(l, r)
         | ExpressionOp::Or(l, r) => {
             define_all_variables(scope, sese, expression, *l);
             define_all_variables(scope, sese, expression, *r);
@@ -429,12 +430,21 @@ fn add_assignments<'a>(
     if block_slot != sese.1 {
         let block = &hf.composed_blocks[block_slot];
         for addr in &block.memory_writes {
-            let state = block.memory.get(addr).unwrap();
-            stmts.push(AstStatement::Assignment {
-                sese,
-                destination: addr.clone(),
-                value: state.clone(),
-            });
+            if addr
+                .iter()
+                .filter(|p| *p == &ExpressionOp::Variable(VariableSymbol::Varnode(lang.sp)))
+                .count()
+                == 0
+            {
+                let mut destination = addr.clone();
+                destination.dereference();
+                let state = block.memory.get(addr).unwrap();
+                stmts.push(AstStatement::Assignment {
+                    sese,
+                    destination,
+                    value: state.clone(),
+                });
+            }
         }
         match &block.next {
             NextBlock::Call {
@@ -483,7 +493,7 @@ fn add_call(
             param_1.add_value(4, InstructionSize::U32);
 
             if let Some(state) = block.get_memory_state_or_none(&param_1) {
-                if let Some(ExpressionOp::Variable(VariableSymbol::Varnode(_))) = state.last_op() {
+                if let Some(ExpressionOp::Variable(VariableSymbol::Varnode(_))) = state.root_op() {
                     break;
                 } else {
                     params.push(state.clone())
