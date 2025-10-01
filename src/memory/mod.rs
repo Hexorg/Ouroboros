@@ -1,9 +1,13 @@
+use navigation::Navigation;
 use nodit::interval::ie;
 use nodit::{Interval, NoditMap};
 
 use sleigh_compile::ldef::SleighLanguage;
 use sleigh_runtime::{Decoder, Instruction};
+use std::borrow::Cow;
 use std::collections::HashMap;
+
+pub mod navigation;
 
 use crate::ir::{
     abstract_syntax_tree::AbstractSyntaxTree, address::Address, basic_block::BlockStorage,
@@ -11,96 +15,111 @@ use crate::ir::{
 };
 use crate::symbol_resolver::SymbolTable;
 
-pub enum DataKind {}
-
 pub enum LiteralKind {
-    Data(DataKind),
-    Instruction(Vec<Instruction>),
+    Data(Vec<u8>),
+    Instruction(usize, Vec<Instruction>),
 }
 
 impl std::fmt::Debug for LiteralKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Data(_) => f.debug_tuple("Data").finish(),
-            Self::Instruction(_) => f.debug_tuple("Instruction").finish(),
+            Self::Instruction(_, _) => f.debug_tuple("Instructions").finish(),
         }
     }
 }
 
-pub struct LiteralState<'s> {
+impl LiteralKind {
+    pub fn size(&self) -> usize {
+        match self {
+            Self::Data(data) => data.len(),
+            Self::Instruction(size, _) => *size,
+        }
+    }
+}
+
+pub struct LiteralState {
     pub addr: Address,
-    pub bytes: &'s [u8],
     pub kind: LiteralKind,
 }
 
-impl std::fmt::Debug for LiteralState<'_> {
+impl std::fmt::Debug for LiteralState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LiteralState")
             .field("addr", &self.addr)
-            .field("size", &self.bytes.len())
             .field("kind", &self.kind)
             .finish()
     }
 }
 
-pub struct Memory<'s> {
+pub struct Memory {
     // We have a choice of granularity, a small state per large interval, or large state per small interval.
-    pub literal: NoditMap<Address, nodit::Interval<Address>, LiteralState<'s>>,
+    pub literal: NoditMap<Address, nodit::Interval<Address>, LiteralState>,
+    pub lang: SleighLanguage,
     pub ir: BlockStorage,
+    pub navigation: Navigation,
     /// All analyzed functions
     pub functions: HashMap<Address, HighFunction>,
-    /// Map of function interval to function start address
-    pub function_span: NoditMap<Address, Interval<Address>, Address>,
     /// All decompiled functions
     pub ast: HashMap<Address, AbstractSyntaxTree>,
     /// Global symbols
     pub symbols: SymbolTable,
 }
 
-impl<'s> LiteralState<'s> {
-    pub fn from_machine_code(bytes: &'s [u8], base_addr: u64, lang: &SleighLanguage) -> Self {
+impl LiteralState {
+    pub fn from_bytes<A: Into<Address>>(addr: A, bytes: Vec<u8>) -> Self {
+        Self {
+            addr: addr.into(),
+            kind: LiteralKind::Data(bytes),
+        }
+    }
+
+    pub fn from_machine_code(bytes: Cow<[u8]>, base_addr: u64, lang: &SleighLanguage) -> Self {
         let mut decoder = Decoder::new();
         let mut instrs = Vec::new();
 
         decoder.global_context = lang.initial_ctx;
-        decoder.set_inst(base_addr, bytes);
+        decoder.set_inst(base_addr, bytes.as_ref());
 
         let mut instr = Instruction::default();
 
         while lang.sleigh.decode_into(&mut decoder, &mut instr).is_some()
-            && ((instr.inst_next - base_addr) as usize) <= bytes.len()
+            && ((instr.inst_next - base_addr) as usize) < bytes.len()
         {
             let i = std::mem::take(&mut instr);
             decoder.set_inst(i.inst_next, &bytes[(i.inst_next - base_addr) as usize..]);
             instrs.push(i);
         }
 
+        let size = instr.inst_next - base_addr;
+        // instrs.push(instr);
+
         Self {
             addr: base_addr.into(),
-            bytes,
-            kind: LiteralKind::Instruction(instrs),
+            kind: LiteralKind::Instruction(size as usize, instrs),
         }
     }
 
     pub fn get_interval(&self) -> Interval<Address> {
-        ie(self.addr, self.addr + self.bytes.len().into())
+        ie(self.addr, self.addr + self.kind.size().into())
     }
 
     pub fn get_instructions(&self) -> &[Instruction] {
         match &self.kind {
-            LiteralKind::Instruction(v) => v,
+            LiteralKind::Instruction(_, v) => v,
             _ => panic!("State is not instructions"),
         }
     }
 }
 
-impl<'s> Memory<'s> {
-    pub fn new() -> Self {
+impl Memory {
+    pub fn new(lang: SleighLanguage) -> Self {
         Self {
+            lang,
             literal: NoditMap::new(),
             ir: BlockStorage::new(),
             functions: HashMap::new(),
-            function_span: NoditMap::new(),
+            navigation: Navigation::new(),
             ast: HashMap::new(),
             symbols: SymbolTable::new(),
         }

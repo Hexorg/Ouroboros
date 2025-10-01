@@ -1,6 +1,3 @@
-use std::collections::HashMap;
-
-use eframe::egui;
 use egui::{
     Color32, Grid, InnerResponse, Response, RichText, ScrollArea, Sense, Spacing, Stroke, Style,
     Ui, UiBuilder, Vec2,
@@ -12,9 +9,10 @@ use sleigh_runtime::{Instruction, SubtableCtx};
 use super::{CodeTheme, TokenType};
 use crate::{
     ir::{address::Address, basic_block::BasicBlock, expression::Expression},
-    memory::Memory,
+    memory::{LiteralKind, LiteralState, Memory},
     tab_viewer::TabSignals,
 };
+
 pub struct InstructionBlockView<'t, T> {
     salt: T,
     theme: &'t CodeTheme,
@@ -158,8 +156,9 @@ fn draw_line(
     i: &Instruction,
     lang: &SleighLanguage,
     ir: Option<&BasicBlock>,
-) {
-    grid.label(theme.make_rich(TokenType::Punctuation, format!("{}", Address(i.inst_start))));
+) -> Response {
+    let addr_lbl =
+        grid.label(theme.make_rich(TokenType::Punctuation, format!("{}", Address(i.inst_start))));
 
     let mut tokens = Vec::new();
     let mut buffer = String::new();
@@ -197,75 +196,7 @@ fn draw_line(
         );
     }
     grid.end_row();
-}
-
-impl<'t, T> InstructionBlockView<'t, T>
-where
-    T: std::hash::Hash,
-{
-    const STROKE: Stroke = Stroke {
-        width: 1.0,
-        color: Color32::DARK_RED,
-    };
-    pub fn new(salt: T, theme: &'t CodeTheme, block: Option<&'t BasicBlock>) -> Self {
-        Self { salt, theme, block }
-    }
-
-    pub fn draw(self, ui: &mut Ui, mem: &Memory, lang: &SleighLanguage, addr: Address) -> Response {
-        ui.scope_builder(
-            UiBuilder::new().sense(Sense::hover() | Sense::click()),
-            |ui| {
-                // ui.push_id(self.salt, |ui| {
-                let grid = Grid::new(self.salt)
-                    .striped(true)
-                    .show(ui, |grid| {
-                        if let Some(block) = self.block {
-                            let literals = mem
-                                .literal
-                                .get_at_point(addr)
-                                .expect("Unable to get memory literal");
-                            let mut iter = literals.get_instructions().iter();
-
-                            let i = iter
-                                .find(|i| i.inst_start == addr.0)
-                                .expect("Unable to find instruction at address");
-                            // let basic_ir = block.instruction_map.get(&i.inst_start.into());
-                            // let composed_ir = self.function.and_then(|f| f.composed_blocks.get_at_point(block.address).unwrap().instruction_map.get(&i.inst_start.into()));
-                            draw_line(self.theme, grid, i, lang, Some(block));
-                            while let Some(i) = iter.next() {
-                                if block.identifier.contains(i.inst_start) {
-                                    // let basic_ir = block.instruction_map.get(&i.inst_start.into());
-                                    // let composed_ir = self.function.and_then(|f| f.composed_blocks.get_at_point(block.address).unwrap().instruction_map.get(&i.inst_start.into()));
-                                    draw_line(self.theme, grid, i, lang, Some(block));
-                                } else {
-                                    break;
-                                }
-                            }
-                        }
-                    })
-                    .response;
-                if grid.contains_pointer() {
-                    ui.painter().rect(
-                        grid.interact_rect,
-                        0.0,
-                        Color32::from_black_alpha(0),
-                        Self::STROKE,
-                        egui::StrokeKind::Outside,
-                    );
-                }
-                // })
-            },
-        )
-        .response
-    }
-}
-
-#[derive(Clone)]
-pub struct MemoryView {
-    // pos:usize,
-    theme: CodeTheme,
-    addr_row_map: HashMap<Address, usize>,
-    row_addr_map: Vec<Address>,
+    addr_lbl
 }
 
 pub fn draw_bb(
@@ -305,146 +236,139 @@ pub fn draw_bb(
     r
 }
 
-impl MemoryView {
+impl<'t, T> InstructionBlockView<'t, T>
+where
+    T: std::hash::Hash,
+{
     const STROKE: Stroke = Stroke {
         width: 1.0,
-        color: Color32::RED,
+        color: Color32::DARK_RED,
     };
-
-    /// Needs memory reference to figure out address to display row mapping.
-    pub fn new(style: &Style, mem: &Memory) -> Self {
-        let (addr_row_map, row_addr_map) = map_addr(mem);
-        Self {
-            theme: CodeTheme::from_style(style),
-            addr_row_map,
-            row_addr_map,
-        }
+    pub fn new(salt: T, theme: &'t CodeTheme, block: Option<&'t BasicBlock>) -> Self {
+        Self { salt, theme, block }
     }
 
-    pub fn draw(
-        &mut self,
-        ui: &mut Ui,
-        signals: &mut TabSignals,
-        mem: &Memory,
-        lang: &SleighLanguage,
-    ) {
-        // TODO: Add whole file view:
-        let mut area = ScrollArea::both().auto_shrink(false);
-        if let Some(addr) = signals.is_requested_pos() {
-            area = area.vertical_scroll_offset(
-                (ui.spacing().interact_size.y + ui.spacing().item_spacing.y)
-                    * self.addr_row_map[&addr] as f32,
-            );
-        }
+    pub fn draw(self, ui: &mut Ui, mem: &Memory, lang: &SleighLanguage, addr: Address) -> Response {
+        ui.scope_builder(
+            UiBuilder::new().sense(Sense::hover() | Sense::click()),
+            |ui| {
+                // ui.push_id(self.salt, |ui| {
+                let grid = Grid::new(self.salt)
+                    .striped(true)
+                    .show(ui, |grid| {
+                        if let Some(block) = self.block {
+                            let literals = mem
+                                .literal
+                                .get_at_point(addr)
+                                .expect("Unable to get memory literal");
+                            let mut iter = literals.get_instructions().iter();
 
-        area.show_rows(
-            ui,
-            ui.spacing().interact_size.y,
-            self.addr_row_map.len(),
-            |ui, row_range| {
-                let start_addr = self.row_addr_map[row_range.start];
-                let last_row = if row_range.end < self.row_addr_map.len() {
-                    row_range.end
-                } else {
-                    self.row_addr_map.len() - 1
-                };
-                let end_addr = self.row_addr_map[last_row];
-                let mut current_addr = start_addr;
-                while current_addr < end_addr {
-                    let literal = mem.literal.get_at_point(current_addr).unwrap();
-                    match &literal.kind {
-                        crate::memory::LiteralKind::Data(_) => todo!(),
-                        crate::memory::LiteralKind::Instruction(instructions) => {
-                            let mut current_block_span: Option<&BasicBlock> = None;
-                            let current_function: Option<&Address> =
-                                mem.function_span.get_at_point(current_addr);
-                            for instr in instructions {
-                                let mut should_draw = false;
-                                if instr.inst_start >= current_addr.0
-                                    && instr.inst_start < end_addr.0
-                                {
-                                    if let Some(block) = current_block_span {
-                                        if !block.identifier.contains(instr.inst_start) {
-                                            current_block_span =
-                                                if let Some(function) = current_function {
-                                                    mem.functions
-                                                        .get(function)
-                                                        .unwrap()
-                                                        .composed_blocks
-                                                        .get_by_address(instr.inst_start)
-                                                } else {
-                                                    mem.ir.get_by_address(instr.inst_start)
-                                                };
-                                            should_draw = true;
-                                        }
-                                    } else {
-                                        current_block_span =
-                                            if let Some(function) = current_function {
-                                                mem.functions
-                                                    .get(function)
-                                                    .unwrap()
-                                                    .composed_blocks
-                                                    .get_by_address(instr.inst_start)
-                                            } else {
-                                                mem.ir.get_by_address(instr.inst_start)
-                                            };
-                                        should_draw = true;
-                                    }
+                            let i = iter
+                                .find(|i| i.inst_start == addr.0)
+                                .expect("Unable to find instruction at address");
+                            // let basic_ir = block.instruction_map.get(&i.inst_start.into());
+                            // let composed_ir = self.function.and_then(|f| f.composed_blocks.get_at_point(block.address).unwrap().instruction_map.get(&i.inst_start.into()));
+                            let lbl = draw_line(self.theme, grid, i, lang, Some(block));
 
-                                    if should_draw {
-                                        // draw single line of the view
-                                        let r = InstructionBlockView::new(
-                                            instr.inst_start,
-                                            &self.theme,
-                                            current_block_span,
-                                        )
-                                        .draw(
-                                            ui,
-                                            mem,
-                                            lang,
-                                            instr.inst_start.into(),
-                                        );
-                                        r.on_hover_ui(|hover| {
-                                            if let (Some(bb), Some(hf)) =
-                                                (current_block_span, current_function)
-                                            {
-                                                let bb = mem
-                                                    .functions
-                                                    .get(hf)
-                                                    .unwrap()
-                                                    .composed_blocks
-                                                    .get_by_identifier(bb.identifier)
-                                                    .unwrap();
-                                                draw_bb(hover, bb, lang, bb.identifier);
-                                            }
-                                        });
-                                        current_addr = instr.inst_next.into();
-                                    }
+                            while let Some(i) = iter.next() {
+                                if block.identifier.contains(i.inst_start) {
+                                    // let basic_ir = block.instruction_map.get(&i.inst_start.into());
+                                    // let composed_ir = self.function.and_then(|f| f.composed_blocks.get_at_point(block.address).unwrap().instruction_map.get(&i.inst_start.into()));
+                                    draw_line(self.theme, grid, i, lang, Some(block));
+                                } else {
+                                    break;
                                 }
                             }
                         }
-                    }
+                    })
+                    .response;
+                if grid.contains_pointer() {
+                    ui.painter().rect(
+                        grid.interact_rect,
+                        0.0,
+                        Color32::from_black_alpha(0),
+                        Self::STROKE,
+                        egui::StrokeKind::Outside,
+                    );
                 }
+                // })
             },
-        );
+        )
+        .response
     }
 }
 
-fn map_addr(mem: &Memory) -> (HashMap<Address, usize>, Vec<Address>) {
-    let mut ar_map = HashMap::new();
-    let mut ra_map = Vec::new();
-    for (_, data) in mem.literal.iter() {
-        match &data.kind {
-            crate::memory::LiteralKind::Data(_) => todo!(),
-            crate::memory::LiteralKind::Instruction(instructions) => {
-                for instr in instructions {
-                    let row = ar_map.len();
-                    let addr = Address(instr.inst_start);
-                    ar_map.insert(addr, row);
-                    ra_map.push(addr);
+pub fn draw(
+    theme: &CodeTheme,
+    ui: &mut Ui,
+    signals: &mut TabSignals,
+    mem: &Memory,
+    current_addr: &mut Address,
+    mut end_addr: Address,
+    state: &LiteralState,
+) {
+    if let LiteralKind::Instruction(size, instr) = &state.kind {
+        let my_max_addr = (state.addr.0 + *size as u64);
+        if end_addr.0 > my_max_addr {
+            end_addr.0 = my_max_addr;
+        }
+        let row_height = ui.spacing().interact_size.y;
+        Grid::new(state.addr).striped(true).show(ui, |ui| {
+            let mut iter = instr.iter();
+            let i = iter
+                .find(|i| i.inst_start == current_addr.0)
+                .expect(&format!(
+                    "Unable to find instruction at address {current_addr}"
+                ));
+            let block = mem
+                .navigation
+                .function_span
+                .get_at_point(i.inst_start.into())
+                .and_then(|a| mem.functions.get(a))
+                .and_then(|hf| hf.composed_blocks.get_by_address(i.inst_start))
+                .or_else(|| mem.ir.get_by_address(i.inst_start));
+            let lbl = draw_line(theme, ui, i, &mem.lang, block);
+            if lbl.contains_pointer() {
+                ui.painter_at(lbl.rect).rect(
+                    lbl.rect,
+                    0.,
+                    theme.highlight_color,
+                    Stroke::NONE,
+                    egui::StrokeKind::Inside,
+                );
+                if ui.ctx().input(|r| r.key_pressed(egui::Key::F)) {
+                    signals.define_function(i.inst_start.into());
                 }
             }
-        }
+
+            while let Some(i) = iter.next() {
+                let block = mem
+                    .navigation
+                    .function_span
+                    .get_at_point(i.inst_start.into())
+                    .and_then(|a| mem.functions.get(a))
+                    .and_then(|hf| hf.composed_blocks.get_by_address(i.inst_start))
+                    .or_else(|| mem.ir.get_by_address(i.inst_start));
+                let lbl = draw_line(theme, ui, i, &mem.lang, block);
+                if lbl.contains_pointer() {
+                    ui.painter_at(lbl.rect).rect(
+                        lbl.rect,
+                        0.,
+                        theme.highlight_color,
+                        Stroke::NONE,
+                        egui::StrokeKind::Inside,
+                    );
+                    if ui.ctx().input(|r| r.key_pressed(egui::Key::F)) {
+                        signals.define_function(i.inst_start.into());
+                    }
+                }
+                if i.inst_start >= end_addr.0 {
+                    break;
+                }
+            }
+        });
+        *current_addr = end_addr;
+    } else {
+        panic!("Unexpected state kind passed to ASM view");
     }
-    (ar_map, ra_map)
 }

@@ -85,7 +85,7 @@ fn analysis(
 }
 
 impl HighFunction {
-    pub fn from_mem(addr: impl Into<Address>, mem: &Memory, lang: &SleighLanguage) -> Self {
+    pub fn from_mem(addr: impl Into<Address>, mem: &Memory) -> Self {
         let calling_convention = CallingConvention::Cdecl;
         let addr = addr.into();
 
@@ -104,7 +104,7 @@ impl HighFunction {
         composed_blocks.insert(block.clone());
         analysis(
             block,
-            lang.sp,
+            mem.lang.sp,
             &mut used_call_results,
             &mut memory_read,
             &mut memory_written,
@@ -133,7 +133,8 @@ impl HighFunction {
                         let mut after_call = composed_block.clone();
                         match calling_convention {
                             CallingConvention::Cdecl => {
-                                let eax = lang
+                                let eax = mem
+                                    .lang
                                     .sleigh
                                     .get_reg("EAX")
                                     .and_then(|v| v.get_var())
@@ -148,9 +149,10 @@ impl HighFunction {
                             }
                         }
                         // all ret instructions pop return pointer off the stack
-                        let mut esp_state = after_call.registers.get_or_symbolic(lang.sp).clone();
+                        let mut esp_state =
+                            after_call.registers.get_or_symbolic(mem.lang.sp).clone();
                         esp_state.add_value(4, InstructionSize::U32);
-                        after_call.registers.set_state(lang.sp, esp_state);
+                        after_call.registers.set_state(mem.lang.sp, esp_state);
                         neighbor_block.inherit_state_from(&after_call)
                     } else {
                         neighbor_block.inherit_state_from(composed_block)
@@ -191,7 +193,7 @@ impl HighFunction {
                     } else {
                         analysis(
                             &composed,
-                            lang.sp,
+                            mem.lang.sp,
                             &mut used_call_results,
                             &mut memory_read,
                             &mut memory_written,
@@ -220,8 +222,8 @@ impl HighFunction {
         }
     }
 
-    pub fn build_ast(&self, mem: &Memory, lang: &SleighLanguage) -> AbstractSyntaxTree {
-        AbstractSyntaxTree::new(self, mem, lang)
+    pub fn build_ast(&self, mem: &Memory) -> AbstractSyntaxTree {
+        AbstractSyntaxTree::new(self, mem)
     }
 
     pub fn take_interval_ownership(&self, map: &mut NoditMap<Address, Interval<Address>, Address>) {

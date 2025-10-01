@@ -679,6 +679,13 @@ impl Expression {
         }
     }
 
+    // Negate current value or calculate 0 - self
+    pub fn negate<S: Into<InstructionSize>>(&mut self, size: S) {
+        let mut left = Expression::from(0);
+        left.sub(self, size);
+        *self = left;
+    }
+
     /// Add a constant value to this expression with immediate optimization.
     ///
     /// This method performs construction-time optimization to maintain canonical form:
@@ -1129,19 +1136,21 @@ impl Expression {
     /// # Arguments
     /// * `other` - The expression to AND with this one
     pub fn and(&mut self, other: &Expression) {
-        let left = self.get_entry_point();
-        if let Some(ExpressionOp::Value(v)) = other.root_op() {
-            if let ExpressionOp::Value(me) = &self.0[left] {
-                self.0[left] = ExpressionOp::Value(*v & *me);
-                return;
+        if self != other {
+            let left = self.get_entry_point();
+            if let Some(ExpressionOp::Value(v)) = other.root_op() {
+                if let ExpressionOp::Value(me) = &self.0[left] {
+                    self.0[left] = ExpressionOp::Value(*v & *me);
+                    return;
+                } else {
+                    self.0.push(ExpressionOp::Value(*v));
+                }
             } else {
-                self.0.push(ExpressionOp::Value(*v));
+                self.copy_other_to_end(&other.0);
             }
-        } else {
-            self.copy_other_to_end(&other.0);
+            let right = self.get_entry_point();
+            self.0.push(ExpressionOp::And(left, right));
         }
-        let right = self.get_entry_point();
-        self.0.push(ExpressionOp::And(left, right));
     }
 
     /// Perform bitwise OR with another expression.

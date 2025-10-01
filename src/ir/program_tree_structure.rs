@@ -52,9 +52,10 @@ impl ProgramTreeStructure {
         }));
         let mut pts_root = seseix_to_seseaddr(blocks, pts_root, &cfg);
         let single_end = cfg.single_end();
-        tree.insert(SingleEntrySingleExit(cfg.start, single_end), vec![pts_root]); // Add the whole function as a SESE as the used algorithm does not
-
-        pts_root = SingleEntrySingleExit(cfg.start, single_end);
+        if pts_root.0 != cfg.start || pts_root.1 != single_end {
+            tree.insert(SingleEntrySingleExit(cfg.start, single_end), vec![pts_root]); // Add the whole function as a SESE as the used algorithm does not
+            pts_root = SingleEntrySingleExit(cfg.start, single_end);
+        }
         let mut lookup_table = HashMap::new();
         compute_sese_address_ranges(
             &mut lookup_table,
@@ -94,12 +95,19 @@ impl ProgramTreeStructure {
     /// * current SESE that might have additional data to pretty print (e.g. local variables).
     ///
     /// The closure needs to output if it has written anything to the buffer or not
-    pub fn pretty_print<F, W>(&self, buffer: &mut W, f: &F) -> std::fmt::Result
+    pub fn pretty_print<F, W>(&self, buffer: &mut W, f: &F) -> std::io::Result<()>
     where
-        F: Fn(&mut W, u8, SingleEntrySingleExit<BlockSlot>) -> Result<bool, std::fmt::Error>,
-        W: std::fmt::Write,
+        F: Fn(&mut W, u8, SingleEntrySingleExit<BlockSlot>) -> Result<bool, std::io::Error>,
+        W: std::io::Write,
     {
         draw_pts(buffer, self.root, &self.tree, f, 0)
+    }
+
+    pub fn pretty_print_self<W>(&self, buffer: &mut W) -> std::io::Result<()>
+    where
+        W: std::io::Write,
+    {
+        draw_pts(buffer, self.root, &self.tree, &|_, _, _| Ok(false), 0)
     }
 }
 
@@ -304,11 +312,11 @@ pub fn draw_pts<W, N, F>(
     pts: &HashMap<SingleEntrySingleExit<N>, Vec<SingleEntrySingleExit<N>>>,
     additional: &F,
     depth: u8,
-) -> std::fmt::Result
+) -> std::io::Result<()>
 where
     N: std::fmt::Debug + std::hash::Hash + Eq + Copy,
-    W: std::fmt::Write,
-    F: Fn(&mut W, u8, SingleEntrySingleExit<N>) -> Result<bool, std::fmt::Error>,
+    W: std::io::Write,
+    F: Fn(&mut W, u8, SingleEntrySingleExit<N>) -> Result<bool, std::io::Error>,
 {
     let tab_prefix = " ".repeat((depth * 2) as usize);
 
@@ -330,7 +338,7 @@ where
     }
     write!(buffer, "}}")?;
     if depth > 0 {
-        buffer.write_char('\n')
+        buffer.write_fmt(format_args!("\n"))
     } else {
         Ok(())
     }

@@ -97,7 +97,7 @@ impl std::fmt::Debug for AbstractSyntaxTree {
 }
 
 impl AbstractSyntaxTree {
-    pub fn new(hf: &HighFunction, mem: &Memory, lang: &SleighLanguage) -> Self {
+    pub fn new(hf: &HighFunction, mem: &Memory) -> Self {
         let mut scope = Scope::new();
         scope.fill_parents(&hf.pts, hf.pts.root);
 
@@ -130,8 +130,13 @@ impl AbstractSyntaxTree {
             }
         }
 
-        let body =
-            AstStatement::Block(build_block(&mut scope, hf.cfg.start, hf, lang, hf.pts.root));
+        let body = AstStatement::Block(build_block(
+            &mut scope,
+            hf.cfg.start,
+            hf,
+            &mem.lang,
+            hf.pts.root,
+        ));
         let mut statements = Vec::new();
         // statements.push(AstStatement::Comment(format!("Scope:")));
         // statements.push(AstStatement::MultilineComment(scope.pretty_print(&hf.pts)));
@@ -149,7 +154,7 @@ impl AbstractSyntaxTree {
             CallingConvention::Cdecl => {
                 for addr in &hf.memory_read {
                     if let ExpressionOp::Variable(VariableSymbol::Varnode(r)) = addr.get(0) {
-                        if r == &lang.sp {
+                        if r == &mem.lang.sp {
                             if let ExpressionOp::Value(_) = addr.get(1) {
                                 if let ExpressionOp::Add(_, _, _) = addr.get(2) {
                                     args.push(VariableSymbol::Ram(Box::new(addr.clone()), 4));
@@ -192,21 +197,25 @@ fn build_block(
 
     if let Some(pts_children) = hf.pts.get_children(sese) {
         // print
-        while let Some(c_pts) = pts_children.iter().find(|p| p.0 == branch_block_slot) {
-            // child block fails out to the same address as parent block - no need to draw else branch.
-            add_program_segment(
-                scope,
-                &mut ast,
-                hf,
-                lang,
-                *c_pts,
-                c_pts.1 == sese.1 && c_pts.1 != hf.cfg.single_end(),
-            );
-            if c_pts.1 != hf.cfg.single_end() {
-                branch_block_slot = add_assignments(&mut ast, c_pts.1, hf, lang, sese);
-            }
-            if c_pts.1 == sese.1 {
-                break;
+        if pts_children.len() == 0 && hf.pts.root == sese {
+            add_program_segment(scope, &mut ast, hf, lang, sese, false);
+        } else {
+            while let Some(c_pts) = pts_children.iter().find(|p| p.0 == branch_block_slot) {
+                // child block fails out to the same address as parent block - no need to draw else branch.
+                add_program_segment(
+                    scope,
+                    &mut ast,
+                    hf,
+                    lang,
+                    *c_pts,
+                    c_pts.1 == sese.1 && c_pts.1 != hf.cfg.single_end(),
+                );
+                if c_pts.1 != hf.cfg.single_end() {
+                    branch_block_slot = add_assignments(&mut ast, c_pts.1, hf, lang, sese);
+                }
+                if c_pts.1 == sese.1 {
+                    break;
+                }
             }
         }
     }
@@ -408,14 +417,15 @@ fn add_return(
 ) {
     match hf.calling_convention {
         CallingConvention::Cdecl => {
-            stmts.push(AstStatement::Return {
-                sese,
-                result: block
-                    .registers
-                    .get(lang.sleigh.get_reg("EAX").unwrap().get_raw_var())
-                    .unwrap()
-                    .clone(),
-            });
+            if let Some(eax) = block
+                .registers
+                .get(lang.sleigh.get_reg("EAX").unwrap().get_raw_var())
+            {
+                stmts.push(AstStatement::Return {
+                    sese,
+                    result: eax.clone(),
+                });
+            }
         }
     }
 }
@@ -461,7 +471,7 @@ fn add_assignments<'a>(
             }
             NextBlock::Return { .. } => {
                 add_return(stmts, block, hf, lang, sese);
-                block_slot
+                hf.cfg.single_end()
             }
             NextBlock::Follow(dst) => add_assignments(
                 stmts,

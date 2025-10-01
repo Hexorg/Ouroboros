@@ -1,16 +1,29 @@
-use std::{collections::{HashMap, HashSet},  ops::Deref};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Deref,
+};
 
 use enumset::{EnumSet, EnumSetType};
 
-use crate::ir::{basic_block::{BlockIdentifier, BlockSlot, DestinationKind, NextBlock}, Expression};
+use crate::ir::{
+    basic_block::{BlockIdentifier, BlockSlot, DestinationKind, NextBlock},
+    Expression,
+};
 
 use super::{Address, BlockStorage};
 
-use petgraph::{algo::{dijkstra, dominators::{simple_fast as build_dominators, Dominators}}, csr::DefaultIx, prelude::{EdgeRef, StableGraph}, visit::{IntoEdgeReferences, IntoNeighbors, IntoNodeReferences}};
 use egui_graphs::Graph as EguiGraph;
+use petgraph::{
+    algo::{
+        dijkstra,
+        dominators::{simple_fast as build_dominators, Dominators},
+    },
+    csr::DefaultIx,
+    prelude::{EdgeRef, StableGraph},
+    visit::{IntoEdgeReferences, IntoNeighbors, IntoNodeReferences},
+};
 
 pub type Graph = petgraph::csr::Csr<BlockIdentifier, LinkKind>;
-
 
 /// From Wikipedia: [Single-entry single-exit](https://en.wikipedia.org/wiki/Single-entry_single-exit) region
 /// in a given graph is an ordered edge pair.
@@ -21,9 +34,8 @@ pub struct SingleEntrySingleExit<N>(pub N, pub N);
 pub enum CFGProperties {
     NeverReturns,
     /// If this CFG has multiple RET blocks, all of them are linked to a fake return block at `Address::NULL`
-    MultipleReturns
+    MultipleReturns,
 }
-
 
 #[derive(Clone)]
 pub enum LinkKind {
@@ -41,20 +53,18 @@ impl std::fmt::Display for LinkKind {
             LinkKind::TrueBranch(expression) => f.write_fmt(format_args!("{expression} is true")),
             LinkKind::FalseBranch(expression) => f.write_fmt(format_args!("{expression} is false")),
             LinkKind::Unconditional => f.write_str(""),
-            LinkKind::Return => f.write_str("returns")
+            LinkKind::Return => f.write_str("returns"),
         }
     }
 }
 
-
-
-pub struct ControlFlowGraph{
-    pub start:BlockSlot,
-    pub ends:Vec<BlockSlot>,
-    graph_map:HashMap<BlockSlot, DefaultIx>,
+pub struct ControlFlowGraph {
+    pub start: BlockSlot,
+    pub ends: Vec<BlockSlot>,
+    graph_map: HashMap<BlockSlot, DefaultIx>,
     forward_graph: Graph,
     pdom_end: BlockSlot,
-    pub distance_to_return:HashMap<BlockSlot, u32>,
+    pub distance_to_return: HashMap<BlockSlot, u32>,
     pub properties: EnumSet<CFGProperties>,
     pub dom: Dominators<DefaultIx>,
     pub pdom: Dominators<DefaultIx>,
@@ -70,13 +80,11 @@ impl Deref for ControlFlowGraph {
 
 impl Into<EguiGraph> for &ControlFlowGraph {
     fn into(self) -> EguiGraph {
-
         let mut g = EguiGraph::new(StableGraph::default());
         let mut graph_map = HashMap::new();
         for (_, &addr) in self.node_references() {
             let idx = g.add_node_with_label((), format!("{addr}"));
             graph_map.insert(addr, idx);
-            
         }
         for edge in self.edge_references() {
             let src_addr = self[edge.source()];
@@ -85,8 +93,12 @@ impl Into<EguiGraph> for &ControlFlowGraph {
             let dst = graph_map[&dst_addr];
             let label = match edge.weight() {
                 LinkKind::Calls(expression) => format!("                    Calls {expression}"),
-                LinkKind::TrueBranch(expression) => format!("                    {expression} is true"),
-                LinkKind::FalseBranch(expression) => format!("                    {expression} is false"),
+                LinkKind::TrueBranch(expression) => {
+                    format!("                    {expression} is true")
+                }
+                LinkKind::FalseBranch(expression) => {
+                    format!("                    {expression} is false")
+                }
                 LinkKind::Unconditional => String::new(),
                 LinkKind::Return => String::from("returns"),
             };
@@ -97,25 +109,28 @@ impl Into<EguiGraph> for &ControlFlowGraph {
 }
 
 /// Check if `start` is an ancestor of `find` in a `tree`
-pub fn is_ancestor<N>(start:N, find:N, dom:&Dominators<N>) -> bool 
-where N: Copy + Eq + std::hash::Hash {
+pub fn is_ancestor<N>(start: N, find: N, dom: &Dominators<N>) -> bool
+where
+    N: Copy + Eq + std::hash::Hash,
+{
     if start == find {
-        return true
+        return true;
     }
     let mut all = false;
     for leaf in dom.immediately_dominated_by(start) {
         // for leaf in nbrs {
-            if leaf == find {
-                return true
-            } else {
-                all |= is_ancestor(leaf, find, dom);
-            }
+        if leaf == find {
+            return true;
+        } else {
+            all |= is_ancestor(leaf, find, dom);
         }
-        all
+    }
+    all
 }
 
-pub fn preorder<N>(dom:&Dominators<N>, root:N) -> HashMap<N, usize> 
-where N: Copy + Eq + std::hash::Hash
+pub fn preorder<N>(dom: &Dominators<N>, root: N) -> HashMap<N, usize>
+where
+    N: Copy + Eq + std::hash::Hash,
 {
     let mut result = HashMap::new();
     let mut order = 0;
@@ -132,25 +147,33 @@ where N: Copy + Eq + std::hash::Hash
     result
 }
 
-pub fn find_path(a:DefaultIx, tree_root:DefaultIx, dom:&Dominators<DefaultIx>) -> Vec<DefaultIx> {
+pub fn find_path(
+    a: DefaultIx,
+    tree_root: DefaultIx,
+    dom: &Dominators<DefaultIx>,
+) -> Vec<DefaultIx> {
     // if let Some(iterator) =  {
-        for nbr in dom.immediately_dominated_by(tree_root) {
-            if nbr == a {
-                return vec![a]
-            } else {
-                let mut path = find_path(a, nbr, dom);
-                if path.len() > 0 {
-                    path.push(nbr);
-                    return path
-                }
+    for nbr in dom.immediately_dominated_by(tree_root) {
+        if nbr == a {
+            return vec![a];
+        } else {
+            let mut path = find_path(a, nbr, dom);
+            if path.len() > 0 {
+                path.push(nbr);
+                return path;
             }
         }
-    // } 
+    }
+    // }
     Vec::new()
 }
 
-
-pub fn least_common_ancestor(u:DefaultIx, v: DefaultIx, tree_root:DefaultIx, tree:&Dominators<DefaultIx>) -> Option<DefaultIx> {
+pub fn least_common_ancestor(
+    u: DefaultIx,
+    v: DefaultIx,
+    tree_root: DefaultIx,
+    tree: &Dominators<DefaultIx>,
+) -> Option<DefaultIx> {
     // TODO: Faster methods exist https://en.wikipedia.org/wiki/Lowest_common_ancestor
     let mut path_to_u = find_path(u, tree_root, tree);
     path_to_u.push(tree_root);
@@ -162,16 +185,16 @@ pub fn least_common_ancestor(u:DefaultIx, v: DefaultIx, tree_root:DefaultIx, tre
     for idx in 0..max_pos {
         if path_to_u[idx] != path_to_v[idx] {
             if idx > 0 {
-                return Some(path_to_u[idx - 1])
+                return Some(path_to_u[idx - 1]);
             } else {
-                return None
+                return None;
             }
         }
     }
-    Some(path_to_u[max_pos-1])
+    Some(path_to_u[max_pos - 1])
 }
 
-pub fn is_reachable(graph:&Graph, start:DefaultIx, target:DefaultIx) -> bool {
+pub fn is_reachable(graph: &Graph, start: DefaultIx, target: DefaultIx) -> bool {
     let mut stack = vec![start];
     let mut visited = HashSet::new();
     while let Some(current) = stack.pop() {
@@ -188,84 +211,98 @@ pub fn is_reachable(graph:&Graph, start:DefaultIx, target:DefaultIx) -> bool {
 }
 
 impl ControlFlowGraph {
-    pub fn new(start:Address, blocks:&BlockStorage) -> Self {
+    pub fn new(start: Address, blocks: &BlockStorage) -> Self {
         let mut graph_map: HashMap<BlockSlot, DefaultIx> = HashMap::new();
         let mut ends = Vec::new();
-        let mut forward_graph:Graph = Graph::new();
-        let mut backward_graph:Graph = Graph::new();
+        let mut forward_graph: Graph = Graph::new();
+        let mut backward_graph: Graph = Graph::new();
         let start = blocks.slot_by_address(start).expect("No IR at address");
         for block_id in blocks.iter_function(start) {
-            let node_index = *graph_map.entry(block_id).or_insert_with(|| {forward_graph.add_node(blocks[block_id].identifier); backward_graph.add_node(blocks[block_id].identifier)});
+            let node_index = *graph_map.entry(block_id).or_insert_with(|| {
+                forward_graph.add_node(blocks[block_id].identifier);
+                backward_graph.add_node(blocks[block_id].identifier)
+            });
             graph_map.insert(block_id, node_index);
 
             if blocks[block_id].is_return() {
                 ends.push(block_id);
             }
-            
+
             for nbr in blocks.iter_neighbors(block_id) {
                 let link_kind = match &blocks[block_id].next {
                     NextBlock::Call { destination, .. } => LinkKind::Calls(destination.clone()),
-                    NextBlock::Jump { condition, true_branch, .. } => {
+                    NextBlock::Jump {
+                        condition,
+                        true_branch,
+                        ..
+                    } => {
                         if blocks.slot_by_destination(true_branch) == Some(nbr) {
                             LinkKind::TrueBranch(condition.clone())
                         } else {
                             LinkKind::FalseBranch(condition.clone())
                         }
-                    },
-                    NextBlock::Return  => LinkKind::Return,
-                    NextBlock::Follow(_) => LinkKind::Unconditional
+                    }
+                    NextBlock::Return => LinkKind::Return,
+                    NextBlock::Follow(_) => LinkKind::Unconditional,
                 };
 
-                let nbr_index = *graph_map.entry(nbr).or_insert_with(|| {forward_graph.add_node(blocks[nbr].identifier); backward_graph.add_node(blocks[nbr].identifier)});
+                let nbr_index = *graph_map.entry(nbr).or_insert_with(|| {
+                    forward_graph.add_node(blocks[nbr].identifier);
+                    backward_graph.add_node(blocks[nbr].identifier)
+                });
                 forward_graph.add_edge(node_index, nbr_index, link_kind.clone());
                 backward_graph.add_edge(nbr_index, node_index, link_kind);
             }
         }
 
-        
         let mut properties = EnumSet::new();
-        let pdom_end;
+        let pdom_end = blocks.next_available_id(); // always add last return block that's unmapped
         if ends.len() == 0 {
-            pdom_end = blocks.next_available_id();
             properties.insert(CFGProperties::NeverReturns);
         } else if ends.len() > 1 {
-            pdom_end = blocks.next_available_id();
             properties.insert(CFGProperties::MultipleReturns);
-            forward_graph.add_node(BlockIdentifier::Unset);
-            let return_node = backward_graph.add_node(BlockIdentifier::Unset);
-            graph_map.insert(pdom_end, return_node);
-            for end in &ends {
-                // edges.push((end.0, 0));
-                forward_graph.add_edge(*graph_map.get(end).unwrap(), return_node, LinkKind::Return);
-                backward_graph.add_edge(return_node, *graph_map.get(end).unwrap(), LinkKind::Return);
-            }
-        } else {
-            pdom_end = ends[0];
+        }
+
+        forward_graph.add_node(BlockIdentifier::Unset);
+        let return_node = backward_graph.add_node(BlockIdentifier::Unset);
+        graph_map.insert(pdom_end, return_node);
+        for end in &ends {
+            // edges.push((end.0, 0));
+            forward_graph.add_edge(*graph_map.get(end).unwrap(), return_node, LinkKind::Return);
+            backward_graph.add_edge(return_node, *graph_map.get(end).unwrap(), LinkKind::Return);
         }
 
         // if this fails at graph_map.get that's because function never returns. What to do in that case?
-        let distance_to_return = dijkstra(&backward_graph, *graph_map.get(&pdom_end).unwrap(), None, |e| {
-            match e.weight() {
-                LinkKind::Calls(_) |
-                LinkKind::Return |
-                LinkKind::Unconditional => 0,
-                LinkKind::TrueBranch(_) |
-                LinkKind::FalseBranch(_) => 1,
-            }
-        }).iter().map(|(k, v)| (if let Some(slot) = blocks.slot_by_identifier(backward_graph[*k]) { (slot, *v)} else { (BlockSlot::default(), u32::MAX)})).collect::<HashMap<BlockSlot, u32>>();
-        
+        let distance_to_return = dijkstra(
+            &backward_graph,
+            *graph_map.get(&pdom_end).unwrap(),
+            None,
+            |e| match e.weight() {
+                LinkKind::Calls(_) | LinkKind::Return | LinkKind::Unconditional => 0,
+                LinkKind::TrueBranch(_) | LinkKind::FalseBranch(_) => 1,
+            },
+        )
+        .iter()
+        .map(|(k, v)| {
+            (if let Some(slot) = blocks.slot_by_identifier(backward_graph[*k]) {
+                (slot, *v)
+            } else {
+                (BlockSlot::default(), u32::MAX)
+            })
+        })
+        .collect::<HashMap<BlockSlot, u32>>();
 
         let dom = build_dominators(&forward_graph, *graph_map.get(&start).unwrap());
         let pdom = build_dominators(&backward_graph, *graph_map.get(&pdom_end).unwrap());
 
-        ControlFlowGraph{
-            start, 
-            ends, 
+        ControlFlowGraph {
+            start,
+            ends,
             graph_map,
             forward_graph,
             pdom_end,
             distance_to_return,
-            properties, 
+            properties,
             dom,
             pdom,
         }
@@ -276,18 +313,15 @@ impl ControlFlowGraph {
         self.pdom_end
     }
 
-    pub fn get_node_idx(&self, index:BlockSlot) -> DefaultIx {
+    pub fn get_node_idx(&self, index: BlockSlot) -> DefaultIx {
         self.graph_map[&index]
     }
-
 }
-
 
 mod test {
     use petgraph::{algo::dominators::simple_fast, csr::DefaultIx};
-    
-    use super::{Address, Graph, least_common_ancestor};
 
+    use super::{least_common_ancestor, Address, Graph};
 
     // /// Graph from [Wikipedia](https://en.wikipedia.org/wiki/Dominator_(graph_theory))
     // /// ```
@@ -323,7 +357,7 @@ mod test {
     // /// 1 --\
     // /// |    3--\
     // /// 2-\  |  7
-    // /// | |  6  | 
+    // /// | |  6  |
     // /// 4 5   \ |
     // /// | /     9
     // /// 8      /
@@ -348,7 +382,6 @@ mod test {
     //         pgraph
     //     )
     // }
-
 
     // #[test]
     // fn test_lca() {

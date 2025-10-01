@@ -98,7 +98,8 @@ impl BlockStorage {
     }
 
     /// Get BlockId of a block that encompasses a given address
-    pub fn slot_by_address(&self, address: Address) -> Option<BlockSlot> {
+    pub fn slot_by_address<A: Into<Address>>(&self, address: A) -> Option<BlockSlot> {
+        let address = address.into();
         self.address_map.get_at_point(address).copied().or_else(|| {
             *self
                 .multiblock_addresses

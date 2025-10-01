@@ -1,7 +1,13 @@
 mod ir;
+mod loaders;
 mod memory;
 mod symbol_resolver;
 mod test;
+
+use std::{
+    fs::File,
+    io::{stdout, Read, Write},
+};
 
 use egui::Key;
 use smallvec::smallvec;
@@ -20,15 +26,16 @@ use ir::{
 };
 use memory::{LiteralState, Memory};
 use sleigh_compile::ldef::SleighLanguage;
-use tab_viewer::{BlockGraph, Decompiler, MemoryView, SignalKind, TabKind, TabSignals, TabViewer};
+use tab_viewer::{
+    BlockGraph, Decompiler, MemoryView, SectionListView, SignalKind, TabKind, TabSignals, TabViewer,
+};
 
-struct DecompilerApp<'s> {
-    memory: Memory<'s>,
+struct DecompilerApp {
+    memory: Memory,
     current_function: Option<Address>,
     signals: TabSignals,
-    lang: SleighLanguage,
     tree: DockState<TabKind>,
-    buttons: [(&'static str, TabKind); 3],
+    buttons: [(&'static str, TabKind); 4],
 }
 
 fn main() -> eframe::Result {
@@ -38,155 +45,13 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default().with_inner_size([1280., 768.0]),
         ..Default::default()
     };
-    let mut memory = Memory::new();
     let lang = sleigh_compile::SleighLanguageBuilder::new(
         "./Ghidra/Processors/x86/data/languages/x86.ldefs",
         "x86:LE:32:default",
     )
     .build()
     .unwrap();
-    let state = LiteralState::from_machine_code(test::EXAMPLE_CODE, test::EXAMPLE_CODE_RIP, &lang);
-
-    let f_start = Address(test::EXAMPLE_CODE_RIP);
-    memory.ir = ir::lift(state.get_instructions(), &lang);
-    memory
-        .literal
-        .insert_strict(state.get_interval(), state)
-        .unwrap();
-
-    let hf = HighFunction::from_mem(f_start, &memory, &lang);
-    hf.take_interval_ownership(&mut memory.function_span);
-    hf.fill_global_symbols(&mut memory);
-    let mut ast = hf.build_ast(&memory, &lang);
-
-    memory
-        .symbols
-        .add(test::EXAMPLE_CODE_RIP, 4, "openPAK".to_owned());
-    memory.symbols.add(0x611084, 4, "pakFilename".to_owned());
-    memory.symbols.add(0x669218, 4, "pakFilename2".to_owned());
-    memory.symbols.add(0x6128a0, 4, "propName".to_owned());
-    memory.symbols.add(0x4b07f0, 4, "get_pak_cache".to_owned());
-    memory.symbols.add(0x4b0730, 4, "logPAK".to_owned());
-    memory.symbols.add(0x4a1310, 4, "file_OpenEx".to_owned());
-    memory
-        .symbols
-        .add(0x04a1490, 4, "read_last_open_file_into".to_owned());
-    memory
-        .symbols
-        .add(0x49C5C0, 4, "mem_newBlock_inSpecialSegment".to_owned());
-
-    memory.symbols.add(0x4BCDD0, 4, "_strncpy".to_owned());
-    memory.symbols.add(0x668F94, 4, "pakFlags".to_owned());
-    memory.symbols.add(0x668fcc, 4, "isDebugPak".to_owned());
-
-    memory
-        .symbols
-        .add(0x4A1220, 4, "close_last_open_fd_if_no_error".to_owned());
-    memory.symbols.add(0x4B0760, 4, "setPalData".to_owned());
-    memory
-        .symbols
-        .add(0x62C124, 4, "IS_READ_PAK_WHOLE_MAYBE".to_owned());
-    memory.symbols.add(0x668F90, 4, "palData".to_owned());
-    memory.symbols.add(0x4A2E40, 4, "setStatics".to_owned());
-    memory
-        .symbols
-        .add(0x52e268, 4, "USER32.DLL::MessageBoxA".to_owned());
-
-    memory
-        .symbols
-        .add(0x4affb0, 4, "fixObjectPointers".to_owned());
-    memory.symbols.add(0x4b1450, 4, "toRenderable".to_owned());
-    memory
-        .symbols
-        .add(0x49c600, 4, "mem_FreeMem_inSpecialSegment".to_owned());
-    memory
-        .symbols
-        .add(0x4b2370, 4, "curious_s15f16_math".to_owned());
-    memory
-        .symbols
-        .add(0x4afed0, 4, "ui_scaling_related".to_owned());
-    memory.symbols.add(0x4b0840, 4, "cache_pak".to_owned());
-    memory.symbols.add(0x4b0680, 4, "loadTextures".to_owned());
-    memory.symbols.add(
-        0x4ada90,
-        4,
-        "SetStaticsAndReturnPalCase_1to2_2to3".to_owned(),
-    );
-    memory
-        .symbols
-        .add(0x4a2e80, 4, "SET_PAK_RELATED_TO_NULL".to_owned());
-    memory.symbols.add(0x4a14f0, 4, "seek_file".to_owned());
-
-    // let mut ast = hf.build_ast(&memory, &lang);
-
-    let var_esp = Expression::from(VariableSymbol::Varnode(lang.sp));
-
-    let mut param_1 = var_esp.clone();
-    param_1.add_value(4, InstructionSize::U32);
-    param_1.dereference();
-
-    let mut param_2 = var_esp.clone();
-    param_2.add_value(8, InstructionSize::U32);
-    param_2.dereference();
-
-    let mut param_3 = var_esp;
-    param_3.add_value(12, InstructionSize::U32);
-    param_3.dereference();
-
-    let stack_4 = VariableSymbol::Ram(
-        Box::new(Expression::from(smallvec![
-            ExpressionOp::var_reg(lang.sp),
-            ExpressionOp::Value(4),
-            ExpressionOp::Add(0, 1, InstructionSize::U32),
-        ])),
-        4,
-    );
-    let stack_8 = VariableSymbol::Ram(
-        Box::new(Expression::from(smallvec![
-            ExpressionOp::var_reg(lang.sp),
-            ExpressionOp::Value(8),
-            ExpressionOp::Add(0, 1, InstructionSize::U32),
-        ])),
-        4,
-    );
-    let stack_12 = VariableSymbol::Ram(
-        Box::new(Expression::from(smallvec![
-            ExpressionOp::var_reg(lang.sp),
-            ExpressionOp::Value(12),
-            ExpressionOp::Add(0, 1, InstructionSize::U32),
-        ])),
-        4,
-    );
-    ast.scope.add(
-        hf.pts.root,
-        stack_4.clone(),
-        VariableDefinition::new(
-            VariableType::Pointer(Box::new(VariableType::Char)),
-            "filename_a".to_owned(),
-            stack_4,
-        ),
-    );
-    ast.scope.add(
-        hf.pts.root,
-        stack_8.clone(),
-        VariableDefinition::new(
-            VariableType::Pointer(Box::new(VariableType::Char)),
-            "filename_b".to_owned(),
-            stack_8,
-        ),
-    );
-    ast.scope.add(
-        hf.pts.root,
-        stack_12.clone(),
-        VariableDefinition::new(
-            VariableType::Pointer(Box::new(VariableType::Char)),
-            "filename_c".to_owned(),
-            stack_12,
-        ),
-    );
-
-    memory.ast.insert(f_start, ast);
-    memory.functions.insert(f_start, hf);
+    let mut memory = Memory::new(lang);
 
     eframe::run_native(
         "Ouroboros",
@@ -194,39 +59,73 @@ fn main() -> eframe::Result {
         Box::new(|cc| {
             let style = &cc.egui_ctx.style();
             let buttons = [
-                ("Listing", TabKind::ASM(MemoryView::new(style, &memory))),
+                (
+                    "Sections",
+                    TabKind::Sections(SectionListView::new(Vec::new())),
+                ),
+                (
+                    "Listing",
+                    TabKind::MemoryView(MemoryView::new(style, &memory)),
+                ),
                 ("Decompiler", TabKind::Decompiler(Decompiler::new(style))),
                 ("Block Graph", TabKind::BlockGraph(BlockGraph::new())),
             ];
 
-            let mut tree = DockState::new(vec![TabKind::ASM(MemoryView::new(style, &memory))]);
-            tree.split(
+            let mut tree =
+                DockState::new(vec![TabKind::MemoryView(MemoryView::new(style, &memory))]);
+            let [_, new_node] = tree.split(
                 (SurfaceIndex(0), NodeIndex(0)),
                 egui_dock::Split::Right,
                 0.5,
                 egui_dock::Node::leaf(TabKind::Decompiler(Decompiler::new(style))),
             );
 
+            tree.split(
+                (SurfaceIndex(0), NodeIndex(0)),
+                egui_dock::Split::Left,
+                0.15,
+                egui_dock::Node::leaf(TabKind::Sections(SectionListView::new(Vec::new()))),
+            );
+
+            let mut signals = TabSignals::new();
+
+            if let Ok(open) = std::env::var("OUROBOROS_AUTOOPEN") {
+                let mut file = File::open(open).unwrap();
+                let mut buf = Vec::new();
+                file.read_to_end(&mut buf).unwrap();
+                loaders::goblin::load(&buf, &mut memory).unwrap();
+
+                signals.announce_new_file();
+            }
+
             Ok(Box::new(DecompilerApp {
-                current_function: Some(f_start),
+                current_function: None,
                 memory,
                 tree,
-                lang,
-                signals: TabSignals::new(),
+                signals,
                 buttons,
             }))
         }),
     )
 }
 
-impl<'s> eframe::App for DecompilerApp<'s> {
+impl eframe::App for DecompilerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::TopBottomPanel::top("menu_panel").show(ctx, |panel| {
             let menu_bar = egui::MenuBar::new().ui(panel, |ui| {
                 ui.menu_button("File", |file_ui| {
                     let open = file_ui.button("Open...");
-                    if open.clicked() || file_ui.ctx().input(|i| i.key_pressed(Key::O)) {
-                        println!("Open file");
+                    if open.clicked() {
+                        if let Some(binary) = rfd::FileDialog::new()
+                            .set_title("Open an executable file")
+                            .pick_file()
+                        {
+                            let mut file = File::open(binary.as_path()).unwrap();
+                            let mut buf = Vec::new();
+                            file.read_to_end(&mut buf).unwrap();
+                            loaders::goblin::load(&buf, &mut self.memory).unwrap();
+                            self.signals.announce_new_file();
+                        }
                     }
                 });
                 // if ui.ctx().input(|i| i.key_pressed(Key::F)) {
@@ -257,20 +156,16 @@ impl<'s> eframe::App for DecompilerApp<'s> {
 
         self.signals.new_frame();
 
-        let mut tab_viewer = TabViewer::new(
-            &self.memory,
-            self.current_function,
-            &mut self.signals,
-            &self.lang,
-        );
+        let mut tab_viewer = TabViewer::new(&self.memory, self.current_function, &mut self.signals);
         DockArea::new(&mut self.tree)
             .style(Style::from_egui(ctx.style().as_ref()))
             .show(ctx, &mut tab_viewer);
 
+        let mut is_repopulate = false;
         for signal in &self.signals {
             use SignalKind::*;
             match signal {
-                RequestPos(_) => (),
+                NewOpenFile | RequestPos(_) | RepopulateInstructionRows => (),
                 RenameSymbol(var, name) => {
                     self.memory
                         .symbols
@@ -287,7 +182,90 @@ impl<'s> eframe::App for DecompilerApp<'s> {
                                 })
                         });
                 }
+                DefineFunctionStart(f) => {
+                    let hf = HighFunction::from_mem(*f, &self.memory);
+                    let mut s = Vec::new();
+                    hf.pts.pretty_print_self(&mut s);
+                    println!("{}", String::from_utf8(s).unwrap());
+                    hf.fill_global_symbols(&mut self.memory);
+                    hf.take_interval_ownership(&mut self.memory.navigation.function_span);
+
+                    let ast = hf.build_ast(&self.memory);
+                    self.memory.ast.insert(*f, ast);
+                    self.memory.functions.insert(*f, hf);
+                    self.current_function = Some(*f);
+                }
+                MarkInstruction(addr) => {
+                    let addr = *addr;
+                    let state = self.memory.literal.get_at_point_mut(addr).unwrap();
+                    match &mut state.kind {
+                        memory::LiteralKind::Data(items) => {
+                            let offset = (addr.0 - state.addr.0) as usize;
+                            let instructions = LiteralState::from_machine_code(
+                                std::borrow::Cow::Borrowed(&items[offset..]),
+                                addr.0,
+                                &self.memory.lang,
+                            );
+
+                            let consumed_size = instructions
+                                .get_instructions()
+                                .last()
+                                .and_then(|i| Some(i.inst_next - state.addr.0))
+                                .unwrap_or(0)
+                                as usize
+                                - offset;
+                            let mut left_over = std::mem::take(items);
+                            let mut tmp = left_over.split_off(offset);
+                            if left_over.len() > 0 {
+                                // println!("Segment has {} bytes left over...", left_over.len());
+                                let literal = LiteralState::from_bytes(state.addr, left_over);
+                                _ = self
+                                    .memory
+                                    .literal
+                                    .remove_overlapping(literal.get_interval());
+                                self.memory
+                                    .literal
+                                    .insert_strict(literal.get_interval(), literal)
+                                    .unwrap();
+                                is_repopulate = true;
+                            }
+                            let remainder = tmp.split_off(consumed_size);
+                            if remainder.len() > 0 {
+                                let addr: Address = instructions
+                                    .get_instructions()
+                                    .last()
+                                    .and_then(|i| Some(i.inst_next))
+                                    .unwrap_or(addr.0)
+                                    .into();
+                                let literal = LiteralState::from_bytes(addr, remainder);
+                                _ = self
+                                    .memory
+                                    .literal
+                                    .remove_overlapping(literal.get_interval());
+                                self.memory
+                                    .literal
+                                    .insert_strict(literal.get_interval(), literal)
+                                    .unwrap();
+                                is_repopulate = true;
+                            }
+                            if instructions.kind.size() > 0 {
+                                let ir =
+                                    ir::lift(instructions.get_instructions(), &self.memory.lang);
+                                self.memory.ir = ir;
+                                self.memory
+                                    .literal
+                                    .insert_strict(instructions.get_interval(), instructions)
+                                    .unwrap();
+                                is_repopulate = true;
+                            }
+                        }
+                        memory::LiteralKind::Instruction(_, _) => (),
+                    }
+                }
             }
+        }
+        if is_repopulate {
+            self.signals.repopulate_instruction_rows();
         }
     }
 }

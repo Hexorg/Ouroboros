@@ -17,27 +17,32 @@ impl std::fmt::Debug for Address {
     }
 }
 
-impl Into<Address> for u64 {
-    fn into(self) -> Address {
-        Address(self)
+impl From<u64> for Address {
+    fn from(value: u64) -> Self {
+        Address(value)
     }
 }
 
-impl Into<Address> for u32 {
-    fn into(self) -> Address {
-        Address(self as u64)
+impl From<i64> for Address {
+    fn from(value: i64) -> Self {
+        Address(value as u64)
     }
 }
 
-impl Into<Address> for i32 {
-    fn into(self) -> Address {
-        Address(self as u64)
+impl From<u32> for Address {
+    fn from(value: u32) -> Self {
+        Address(value as u64)
+    }
+}
+impl From<i32> for Address {
+    fn from(value: i32) -> Self {
+        Address(value as u64)
     }
 }
 
-impl Into<Address> for usize {
-    fn into(self) -> Address {
-        Address(self as u64)
+impl From<usize> for Address {
+    fn from(value: usize) -> Self {
+        Address(value as u64)
     }
 }
 

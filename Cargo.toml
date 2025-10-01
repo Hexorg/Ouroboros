@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 eframe = "0.32.1"
-egui = { version = "0.32.1", features = ["accesskit", "rayon"] }
+egui = { version = "0.32", features = ["accesskit", "rayon"] }
 egui_dock = "0.17.0"
 egui_extras = "0.32.1"
 egui_graphs = "0.28.0"
@@ -20,4 +20,12 @@ smallvec = "1.15.1"
 sleigh-runtime = { git = "https://github.com/icicle-emu/icicle-emu" }
 sleigh-compile = { git = "https://github.com/icicle-emu/icicle-emu" }
 pcode = { git = "https://github.com/icicle-emu/icicle-emu" }
-alacritty_terminal = "0.25.0"
+goblin = { path = "/home/hexorg/Workspace/Public/goblin"}
+rfd = "0.15.4"
+# alacritty_terminal = "0.25.0"
+
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
+panic = "abort"

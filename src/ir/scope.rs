@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Write};
+use std::collections::HashMap;
 
 use super::{
     basic_block::BlockSlot, control_flow_graph::SingleEntrySingleExit, expression::VariableSymbol,
@@ -123,13 +123,14 @@ impl Scope {
     }
 
     pub fn pretty_print(&self, pts: &ProgramTreeStructure) -> String {
-        let mut buffer = String::new();
+        use std::io::Write;
+        let mut buffer = std::io::Cursor::new(Vec::new());
         pts.pretty_print(&mut buffer, &|buffer, depth, sese| {
             let mut has_written = false;
             if let Some(vars) = self.get(sese) {
                 for (key, value) in vars.iter() {
                     if !has_written {
-                        buffer.write_char('\n')?;
+                        buffer.write_fmt(format_args!("\n"))?;
                         has_written = true;
                     }
                     write!(
@@ -146,6 +147,6 @@ impl Scope {
             Ok(has_written)
         })
         .expect("Unable to generate pretty string for pts.");
-        buffer
+        String::from_utf8(buffer.into_inner()).unwrap()
     }
 }
