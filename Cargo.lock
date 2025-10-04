@@ -1527,6 +1527,7 @@ dependencies = [
 [[package]]
 name = "goblin"
 version = "0.10.1"
+source = "git+https://github.com/m4b/goblin#d950c19db8e90b6c300f10305086acff58809b58"
 dependencies = [
  "log",
  "plain",

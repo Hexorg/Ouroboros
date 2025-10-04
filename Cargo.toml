@@ -20,7 +20,7 @@ smallvec = "1.15.1"
 sleigh-runtime = { git = "https://github.com/icicle-emu/icicle-emu" }
 sleigh-compile = { git = "https://github.com/icicle-emu/icicle-emu" }
 pcode = { git = "https://github.com/icicle-emu/icicle-emu" }
-goblin = { path = "/home/hexorg/Workspace/Public/goblin"}
+goblin = { git = "https://github.com/m4b/goblin"}
 rfd = "0.15.4"
 # alacritty_terminal = "0.25.0"
 
