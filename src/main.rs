@@ -46,7 +46,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     let lang = sleigh_compile::SleighLanguageBuilder::new(
-        "./Ghidra/Processors/x86/data/languages/x86.ldefs",
+        "./SLEIGH/Processors/x86/data/languages/x86.ldefs",
         "x86:LE:32:default",
     )
     .build()
