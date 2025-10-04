@@ -3,7 +3,7 @@ use nodit::interval::ie;
 use nodit::{Interval, NoditMap};
 
 use sleigh_compile::ldef::SleighLanguage;
-use sleigh_runtime::{Decoder, Instruction};
+use sleigh_runtime::{Decoder, Instruction, Lifter as InstructionToPcode};
 use std::borrow::Cow;
 use std::collections::HashMap;
 
@@ -74,9 +74,14 @@ impl LiteralState {
         }
     }
 
-    pub fn from_machine_code(bytes: Cow<[u8]>, base_addr: u64, lang: &SleighLanguage) -> Self {
+    pub fn from_machine_code(
+        bytes: Cow<[u8]>,
+        base_addr: u64,
+        lang: &SleighLanguage,
+    ) -> Option<Self> {
         let mut decoder = Decoder::new();
         let mut instrs = Vec::new();
+        let mut lifter = InstructionToPcode::new();
 
         decoder.global_context = lang.initial_ctx;
         decoder.set_inst(base_addr, bytes.as_ref());
@@ -87,16 +92,26 @@ impl LiteralState {
             && ((instr.inst_next - base_addr) as usize) < bytes.len()
         {
             let i = std::mem::take(&mut instr);
-            decoder.set_inst(i.inst_next, &bytes[(i.inst_next - base_addr) as usize..]);
-            instrs.push(i);
+            if let Ok(block) = lifter.lift(&lang.sleigh, &i) {
+                if block.instructions.len() > 1 {
+                    decoder.set_inst(i.inst_next, &bytes[(i.inst_next - base_addr) as usize..]);
+                    instrs.push(i);
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
         }
 
-        let size = instr.inst_next - base_addr;
-        // instrs.push(instr);
-
-        Self {
-            addr: base_addr.into(),
-            kind: LiteralKind::Instruction(size as usize, instrs),
+        if let Some(last_instruction) = instrs.last() {
+            let size = last_instruction.inst_next - base_addr;
+            Some(Self {
+                addr: base_addr.into(),
+                kind: LiteralKind::Instruction(size as usize, instrs),
+            })
+        } else {
+            None
         }
     }
 

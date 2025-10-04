@@ -43,6 +43,7 @@ impl BlockSlot {
 ///
 /// *Note:* some blocks will not belong to an address in cases like `rep.movsd` instruction
 /// because that instruction alone emits two blocks.
+#[derive(Default)]
 pub struct BlockStorage {
     blocks: Vec<BasicBlock>,
     address_map: NoditMap<Address, Interval<Address>, BlockSlot>,

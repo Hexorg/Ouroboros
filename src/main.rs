@@ -165,7 +165,12 @@ impl eframe::App for DecompilerApp {
         for signal in &self.signals {
             use SignalKind::*;
             match signal {
-                NewOpenFile | RequestPos(_) | RepopulateInstructionRows => (),
+                NewOpenFile | RepopulateInstructionRows => (),
+                RequestPos(addr) => {
+                    if self.memory.functions.contains_key(addr) {
+                        self.current_function = Some(*addr)
+                    }
+                }
                 RenameSymbol(var, name) => {
                     self.memory
                         .symbols
@@ -205,7 +210,8 @@ impl eframe::App for DecompilerApp {
                                 std::borrow::Cow::Borrowed(&items[offset..]),
                                 addr.0,
                                 &self.memory.lang,
-                            );
+                            )
+                            .unwrap();
 
                             let consumed_size = instructions
                                 .get_instructions()
@@ -249,8 +255,12 @@ impl eframe::App for DecompilerApp {
                                 is_repopulate = true;
                             }
                             if instructions.kind.size() > 0 {
-                                let ir =
-                                    ir::lift(instructions.get_instructions(), &self.memory.lang);
+                                let bs = std::mem::take(&mut self.memory.ir);
+                                let ir = ir::lift(
+                                    instructions.get_instructions(),
+                                    &self.memory.lang,
+                                    Some(bs),
+                                );
                                 self.memory.ir = ir;
                                 self.memory
                                     .literal

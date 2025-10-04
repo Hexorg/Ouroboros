@@ -58,9 +58,16 @@ pub fn from_machine_code(bytes: &[u8], base_addr: u64, lang: &SleighLanguage) ->
     instrs
 }
 
-pub fn lift(instructions: &[Instruction], lang: &SleighLanguage) -> BlockStorage {
+pub fn lift(
+    instructions: &[Instruction],
+    lang: &SleighLanguage,
+    storage: Option<BlockStorage>,
+) -> BlockStorage {
     let mut pcode_lifter = InstructionToPCode::new();
     let mut my_lifter = PCodeToBasicBlocks::new();
+    if let Some(storage) = storage {
+        my_lifter.blocks = storage;
+    }
     let mut dasm = String::new();
     for instruction in instructions {
         let pcode = pcode_lifter.lift(&lang.sleigh, instruction).unwrap();

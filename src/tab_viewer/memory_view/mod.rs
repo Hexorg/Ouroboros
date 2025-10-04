@@ -112,6 +112,7 @@ impl MemoryView {
                                         )
                                     }
                                 }
+                                ui.add_space(8.0);
                             } else {
                                 Grid::new("NoAddrGrid").show(ui, |ui| {
                                     ui.label(self.theme.make_rich(

@@ -336,6 +336,9 @@ pub fn draw(
                     Stroke::NONE,
                     egui::StrokeKind::Inside,
                 );
+                if lbl.clicked() {
+                    signals.request_pos(i.inst_start.into());
+                }
                 if ui.ctx().input(|r| r.key_pressed(egui::Key::F)) {
                     signals.define_function(i.inst_start.into());
                 }
