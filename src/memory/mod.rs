@@ -94,8 +94,13 @@ impl LiteralState {
             let i = std::mem::take(&mut instr);
             if let Ok(block) = lifter.lift(&lang.sleigh, &i) {
                 if block.instructions.len() > 1 {
-                    decoder.set_inst(i.inst_next, &bytes[(i.inst_next - base_addr) as usize..]);
+                    let start = (i.inst_next - base_addr) as usize;
+                    decoder.set_inst(i.inst_next, &bytes[start..]);
                     instrs.push(i);
+                    if bytes[start..(start + 16)].iter().all(|b| *b == 0) {
+                        // Assuming no valid instructions compose 16 zero bytes.
+                        break;
+                    }
                 } else {
                     break;
                 }

@@ -149,8 +149,10 @@ impl HighFunction {
                             }
                         }
                         // all ret instructions pop return pointer off the stack
-                        let mut esp_state =
-                            after_call.registers.get_or_symbolic(mem.lang.sp).clone();
+                        let mut esp_state = after_call
+                            .registers
+                            .get_or_symbolic(mem.lang.sp)
+                            .into_owned();
                         esp_state.add_value(4, InstructionSize::U32);
                         after_call.registers.set_state(mem.lang.sp, esp_state);
                         neighbor_block.inherit_state_from(&after_call)

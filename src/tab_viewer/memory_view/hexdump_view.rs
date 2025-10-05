@@ -140,6 +140,9 @@ pub fn draw(
                         });
                     });
                     current_addr.0 += 16;
+                    if current_addr.0 > end_addr.0 {
+                        *current_addr = end_addr;
+                    }
                 }
             });
     } else {

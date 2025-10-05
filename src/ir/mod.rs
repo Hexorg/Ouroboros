@@ -14,7 +14,10 @@
 //!     - Use [`ProgramTreeStructure`] to keep track of the scope of variables for each program block.
 //!
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+};
 
 use nodit::interval::ie;
 use sleigh_compile::ldef::SleighLanguage;
@@ -100,10 +103,10 @@ struct PCodeToBasicBlocks {
     known_block_boundaries: HashSet<Address>,
 }
 
-fn get_state(v: pcode::Value, size: u8, registers: &mut CpuState) -> Expression {
+fn get_state<'a>(v: pcode::Value, registers: &'a mut CpuState) -> Cow<'a, Expression> {
     match v {
-        pcode::Value::Var(var_node) => registers.get_or_symbolic(var_node).clone(),
-        pcode::Value::Const(value, _size) => Expression::from(value),
+        pcode::Value::Var(var_node) => registers.get_or_symbolic(var_node),
+        pcode::Value::Const(value, _size) => Cow::Owned(Expression::from(value)),
     }
 }
 
@@ -202,7 +205,8 @@ impl PCodeToBasicBlocks {
                 }
                 IntAdd => {
                     let mut left =
-                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                            .into_owned();
                     let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
 
                     left.add(&right, pcode.inputs.first().size());
@@ -220,26 +224,30 @@ impl PCodeToBasicBlocks {
                 }
                 IntAnd => {
                     let mut left =
-                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                            .into_owned();
                     let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
                     left.and(&right);
                     self.current_block.registers.set_state(pcode.output, left);
                 }
                 IntXor => {
                     let mut left =
-                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                            .into_owned();
                     let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
                     left.xor(&right);
                     self.current_block.registers.set_state(pcode.output, left);
                 }
                 IntCountOnes => {
                     let mut left =
-                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                            .into_owned();
                     left.count_ones();
                     self.current_block.registers.set_state(pcode.output, left);
                 }
                 Load(space) => {
-                    let addr = get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                    let addr = get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                        .into_owned();
 
                     assert!(pcode.inputs.second().is_invalid());
                     let value = match space {
@@ -251,7 +259,7 @@ impl PCodeToBasicBlocks {
                         }
                         a => todo!("Unsupported memory space {a}"),
                     }
-                    .clone();
+                    .into_owned();
                     if !pcode.output.is_temp() {
                         let mut assignment =
                             Expression::from(ExpressionOp::DestinationRegister(pcode.output));
@@ -263,8 +271,10 @@ impl PCodeToBasicBlocks {
                     self.current_block.registers.set_state(pcode.output, value);
                 }
                 Store(space) => {
-                    let addr = get_state(pcode.inputs.first(), &mut self.current_block.registers);
-                    let value = get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                    let addr = get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                        .into_owned();
+                    let value = get_state(pcode.inputs.second(), &mut self.current_block.registers)
+                        .into_owned();
                     self.current_block.memory_writes.insert(addr.clone());
 
                     let mut assignment = addr.clone();
@@ -280,26 +290,30 @@ impl PCodeToBasicBlocks {
                     }
                 }
                 Copy => {
-                    let state = get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                    let state = get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                        .into_owned();
                     self.current_block.registers.set_state(pcode.output, state);
                 }
                 IntLess => {
                     let mut left =
-                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                            .into_owned();
                     let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
                     left.check_less(&right, pcode.inputs.first().size(), Unsigned);
                     self.current_block.registers.set_state(pcode.output, left);
                 }
                 IntSignedLess => {
                     let mut left =
-                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                            .into_owned();
                     let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
                     left.check_less(&right, pcode.inputs.first().size(), Signed);
                     self.current_block.registers.set_state(pcode.output, left);
                 }
                 IntSignedBorrow => {
                     let mut left =
-                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                            .into_owned();
                     let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
                     left.sub(&right, pcode.inputs.first().size());
                     left.overflow(Signed);
@@ -307,7 +321,8 @@ impl PCodeToBasicBlocks {
                 }
                 IntCarry => {
                     let mut left =
-                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                            .into_owned();
                     let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
                     left.add(&right, pcode.inputs.first().size());
                     left.overflow(Unsigned);
@@ -315,7 +330,8 @@ impl PCodeToBasicBlocks {
                 }
                 IntSignedCarry => {
                     let mut left =
-                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                            .into_owned();
                     let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
                     left.add(&right, pcode.inputs.first().size());
                     left.overflow(Signed);
@@ -323,7 +339,8 @@ impl PCodeToBasicBlocks {
                 }
                 IntSub => {
                     let mut left =
-                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                            .into_owned();
                     let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
                     left.sub(&right, pcode.inputs.first().size());
 
@@ -340,28 +357,32 @@ impl PCodeToBasicBlocks {
                 }
                 IntNegate => {
                     let mut left =
-                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                            .into_owned();
                     assert!(pcode.inputs.second().is_invalid());
                     left.negate(pcode.inputs.first().size());
                     self.current_block.registers.set_state(pcode.output, left);
                 }
                 IntMul => {
                     let mut left =
-                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                            .into_owned();
                     let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
                     left.multiply(&right, pcode.inputs.first().size());
                     self.current_block.registers.set_state(pcode.output, left);
                 }
                 IntEqual => {
                     let mut left =
-                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                            .into_owned();
                     let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
                     left.check_equals(&right, pcode.inputs.first().size(), Unsigned);
                     self.current_block.registers.set_state(pcode.output, left);
                 }
                 IntLeft => {
                     let mut left =
-                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                            .into_owned();
                     let right = get_state(pcode.inputs.second(), &mut self.current_block.registers)
                         .get_value();
                     left.bit_shift_left(right, pcode.inputs.first().size());
@@ -369,7 +390,8 @@ impl PCodeToBasicBlocks {
                 }
                 IntRight => {
                     let mut left =
-                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                            .into_owned();
                     let right = get_state(pcode.inputs.second(), &mut self.current_block.registers)
                         .get_value();
                     left.bit_shift_right(right, pcode.inputs.first().size());
@@ -377,20 +399,23 @@ impl PCodeToBasicBlocks {
                 }
                 BoolNot | IntNot | IntNotEqual => {
                     let mut left =
-                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                            .into_owned();
                     left.not();
                     self.current_block.registers.set_state(pcode.output, left);
                 }
                 IntOr | BoolOr => {
                     let mut left =
-                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                            .into_owned();
                     let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
                     left.or(&right);
                     self.current_block.registers.set_state(pcode.output, left);
                 }
                 PcodeBranch(lbl) => {
                     let condition =
-                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                            .into_owned();
                     // lbl will map to BlockId, but we may not know this id yet.
                     let false_branch = DestinationKind::Virtual(
                         instruction_pointer,
@@ -437,19 +462,22 @@ impl PCodeToBasicBlocks {
                     ));
                 }
                 ZeroExtend => {
-                    let left = get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                    let left = get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                        .into_owned();
                     self.current_block.registers.set_state(pcode.output, left);
                 }
                 Branch(hint) => {
                     let condition =
-                        get_state(pcode.inputs.first(), &mut self.current_block.registers);
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                            .into_owned();
                     if condition.is_symbolic() {
                         self.current_block
                             .key_instructions
                             .insert(instruction_pointer, condition.clone());
                     }
                     let destination =
-                        get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                        get_state(pcode.inputs.second(), &mut self.current_block.registers)
+                            .into_owned();
                     let destination = if destination.is_symbolic() {
                         self.current_block
                             .key_instructions

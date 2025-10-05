@@ -2425,8 +2425,8 @@ mod test {
         e.add(&Expression::from(VariableSymbol::Varnode(mk_eax())), U32);
         e.multiply_value(4, U32);
         let result: SmallVec<[ExpressionOp; SMALLVEC_SIZE]> = smallvec![
-            ExpressionOp::Value(1),
             var_reg(mk_eax()),
+            ExpressionOp::Value(1),
             ExpressionOp::Add(0, 1, U32),
             ExpressionOp::Value(4),
             ExpressionOp::Multiply(2, 3, U32),
@@ -2445,7 +2445,7 @@ mod test {
         sub.add(&Expression::from(VariableSymbol::Varnode(mk_esp())), U32);
         sub.multiply_value(2, U32); // sub = (1+?ESP) * 2
 
-        e.replace_variable_with_expression(1, &sub);
+        e.replace_variable_with_expression(0, &sub);
 
         // This block is correct if we are NOT using expression flattening
         // assert_eq!(e.0, vec![
@@ -2464,8 +2464,8 @@ mod test {
         // this block is correct if we are using expression flatening
         let result: SmallVec<[ExpressionOp; SMALLVEC_SIZE]> = smallvec![
             // (1 + (1 + ?ESP) * 2 ) * 4
-            Value(1),
             VarOp(VariableSymbol::Varnode(mk_esp())),
+            Value(1),
             Add(0, 1, U32),
             Value(2),
             Multiply(2, 3, U32),
@@ -2635,7 +2635,7 @@ mod test {
         let mut e = Expression::from(smallvec![var_reg(mk_eax()), Value(10), Sub(0, 1, U32)]);
         e.sub_value_at(2, 9, false, U32);
         let result: SmallVec<[ExpressionOp; SMALLVEC_SIZE]> =
-            smallvec![var_reg(mk_eax()), Value(1), Sub(0, 1, U32)];
+            smallvec![var_reg(mk_eax()), Value(19), Sub(0, 1, U32)];
         assert_eq!(e.0, result)
     }
 

@@ -10,7 +10,6 @@ use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
     fmt::Debug,
-    intrinsics::unreachable,
     ops::{Index, IndexMut},
     usize,
 };
@@ -352,16 +351,24 @@ impl<T> IndexMut<u8> for SpannedStorage<T> {
 
 impl<T> SpannedStorage<T> {
     pub fn insert(&mut self, var_node: VarNode, item: T) {
+        // cut away overlapping expression
+        if let SpannedItem::ItemAt(a) = self[var_node.offset] {
+            let new_size = var_node.offset - a;
+            if let SpannedItem::Item(e, _) = std::mem::take(&mut self[a]) {
+                self[a] = SpannedItem::Item(e, new_size);
+            } else {
+                panic!("Broken spanned item pointer");
+            }
+        }
         self[var_node.offset] = SpannedItem::Item(item, var_node.size);
         for offset in 1..var_node.size {
-            if matches!(
-                self[var_node.offset + offset],
-                SpannedItem::Empty | SpannedItem::ItemAt(_)
-            ) {
-                self[var_node.offset + offset] = SpannedItem::ItemAt(var_node.offset)
-            } else {
-                panic!("Register storage collision")
-            }
+            self[var_node.offset + offset] = SpannedItem::ItemAt(var_node.offset);
+        }
+        let mut offset = var_node.offset + var_node.size;
+        // trim later offsets since this insertion have overwritten a possible expression
+        while let SpannedItem::ItemAt(_) = self[offset] {
+            self[offset] = SpannedItem::Empty;
+            offset += 1;
         }
     }
 }
@@ -377,7 +384,7 @@ impl CpuState {
             state: HashMap::new(),
         }
     }
-    pub fn get_or_symbolic<'e>(&'e mut self, size: u8, var_node: VarNode) -> Cow<'e, Expression> {
+    pub fn get_or_symbolic<'e>(&'e mut self, var_node: VarNode) -> Cow<'e, Expression> {
         let space = self.state.entry(var_node.id).or_default();
 
         if matches!(&space[var_node.offset], SpannedItem::Empty) {
@@ -386,25 +393,27 @@ impl CpuState {
 
         let size_to_mask = |size: u8| (1u64.unbounded_shl(size as u32 * 8).wrapping_sub(1));
 
+        // What happens when we have data in EAX, but ask for AH, or AX?
         match &space[var_node.offset] {
-            SpannedItem::Item(e, size) if var_node.size >= *size => e, // bigger sizes are padded with 0s which `Expression` can take care of
+            SpannedItem::Item(e, size) if var_node.size >= *size => Cow::Borrowed(e), // bigger sizes are padded with 0s which `Expression` can take care of
             SpannedItem::Item(e, size) => {
-                // asking for a smaller expression than stored
+                // asking for a smaller expression than stored (e.g. asking for AX from EAX)
                 let mut output = e.clone();
-                let mask = size_to_mask(*size);
-                output.and(Expression::from(mask));
+                let mask = size_to_mask(*size); // just mask upper bytes away
+                output.and(&Expression::from(mask));
                 Cow::Owned(output)
             }
             SpannedItem::ItemAt(a) => {
-                if let SpannedItem::Item(e) = &space[*a] {
+                // asking for in-the-middle bytes
+                // example: stored EAX, but reading AH
+                //     var_node.offset -\
+                // [(expression, 4), ItemAt(0), ItemAt(0), ItemAt(0), Empty]
+                if let SpannedItem::Item(e, _size) = &space[*a] {
+                    let mask = size_to_mask(var_node.size)
+                        .unbounded_shl(var_node.offset as u32 - *a as u32); // shift mask to align with the offset
                     let mut output = e.clone();
-                    let mask = Expression::from(match var_node.offset - *a {
-                        0 => unreachable!(),
-                        1 => 0xff00,
-                        2 => 0xff0000,
-                        ()
-                    });
-                    output.and(other);
+                    output.and(&Expression::from(mask));
+                    Cow::Owned(output)
                 } else {
                     unreachable!()
                 }
@@ -427,7 +436,7 @@ impl CpuState {
             .get(&var_node.id)
             .and_then(|s| Some(&s[var_node.offset]))
         {
-            Some(SpannedItem::Item(e)) => Some(e),
+            Some(SpannedItem::Item(e, _)) => Some(e),
             Some(SpannedItem::ItemAt(a)) => todo!("Register {var_node:?} overlaps value at {a}"),
             _ => None,
         }
@@ -536,11 +545,17 @@ impl BasicBlock {
         self.registers.len() == 0 && self.memory.len() == 0
     }
 
-    pub fn get_memory_state<E: Into<Expression>>(&mut self, addr: E, size: u8) -> &Expression {
+    pub fn get_memory_state<'a, E: Into<Expression>>(
+        &'a mut self,
+        addr: E,
+        size: u8,
+    ) -> Cow<'a, Expression> {
         let addr = addr.into();
-        self.memory
-            .entry(addr.clone())
-            .or_insert(Expression::from(VariableSymbol::Ram(Box::new(addr), size)))
+        Cow::Borrowed(
+            self.memory
+                .entry(addr.clone())
+                .or_insert(Expression::from(VariableSymbol::Ram(Box::new(addr), size))),
+        )
     }
 
     pub fn get_memory_state_or_none<'e, E: Into<&'e Expression>>(
@@ -669,10 +684,10 @@ impl BasicBlock {
 
         for (r, state) in self.registers.state.iter() {
             let mutated = SmallVec::from_buf(std::array::from_fn(|idx| match &state[idx as u8] {
-                SpannedItem::Item(e) => {
+                SpannedItem::Item(e, size) => {
                     let mut e = e.clone();
                     e.replace_variable_with(replace(other));
-                    SpannedItem::Item(e)
+                    SpannedItem::Item(e, *size)
                 }
                 SpannedItem::ItemAt(v) => SpannedItem::ItemAt(*v),
                 SpannedItem::Empty => SpannedItem::Empty,

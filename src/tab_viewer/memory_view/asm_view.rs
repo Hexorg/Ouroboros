@@ -308,11 +308,11 @@ pub fn draw(
     state: &LiteralState,
 ) {
     if let LiteralKind::Instruction(size, instr) = &state.kind {
-        let my_max_addr = (state.addr.0 + *size as u64);
+        let my_max_addr = state.addr.0 + *size as u64;
         if end_addr.0 > my_max_addr {
             end_addr.0 = my_max_addr;
         }
-        let row_height = ui.spacing().interact_size.y;
+        println!("Drawing instructions from {current_addr} to {end_addr}");
         Grid::new(state.addr).striped(true).show(ui, |ui| {
             let mut iter = instr.iter();
             let i = iter

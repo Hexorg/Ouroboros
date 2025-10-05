@@ -41,9 +41,9 @@ pub fn load<'s>(bytes: &'s [u8], memory: &mut Memory) -> Result<(), error::Error
                         .unwrap();
                 }
                 let mut section = Section::from(&section);
-                if section.virtual_address.0 as u32 == section.pointer_to_raw_data {
-                    section.virtual_address.0 += pe.image_base;
-                }
+                // if section.virtual_address.0 as u32 == section.pointer_to_raw_data {
+                section.virtual_address.0 += pe.image_base;
+                // }
                 let literal = LiteralState::from_bytes(section.virtual_address, data.into_owned());
                 memory.navigation.sections.push(section);
                 memory

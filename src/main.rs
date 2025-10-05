@@ -229,6 +229,7 @@ impl eframe::App for DecompilerApp {
                                     .memory
                                     .literal
                                     .remove_overlapping(literal.get_interval());
+                                println!("Adding left-over data: {:?}", literal.get_interval());
                                 self.memory
                                     .literal
                                     .insert_strict(literal.get_interval(), literal)
@@ -248,6 +249,7 @@ impl eframe::App for DecompilerApp {
                                     .memory
                                     .literal
                                     .remove_overlapping(literal.get_interval());
+                                println!("Adding remainder data: {:?}", literal.get_interval());
                                 self.memory
                                     .literal
                                     .insert_strict(literal.get_interval(), literal)
@@ -262,6 +264,7 @@ impl eframe::App for DecompilerApp {
                                     Some(bs),
                                 );
                                 self.memory.ir = ir;
+                                println!("Adding instructions {:?}", instructions.get_interval());
                                 self.memory
                                     .literal
                                     .insert_strict(instructions.get_interval(), instructions)
