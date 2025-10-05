@@ -10,6 +10,7 @@ use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
     fmt::Debug,
+    intrinsics::unreachable,
     ops::{Index, IndexMut},
     usize,
 };
@@ -306,7 +307,7 @@ impl Default for NextBlock {
 
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
 pub enum SpannedItem<T> {
-    Item(T),
+    Item(T, u8),
     ItemAt(u8),
     #[default]
     Empty,
@@ -315,7 +316,7 @@ pub enum SpannedItem<T> {
 impl<T> SpannedItem<T> {
     pub fn unwrap(&self) -> &T {
         match self {
-            Self::Item(t) => t,
+            Self::Item(t, _) => t,
             Self::ItemAt(d) => {
                 panic!("Tried to get register, but its value is stored at offset {d}")
             }
@@ -351,7 +352,7 @@ impl<T> IndexMut<u8> for SpannedStorage<T> {
 
 impl<T> SpannedStorage<T> {
     pub fn insert(&mut self, var_node: VarNode, item: T) {
-        self[var_node.offset] = SpannedItem::Item(item);
+        self[var_node.offset] = SpannedItem::Item(item, var_node.size);
         for offset in 1..var_node.size {
             if matches!(
                 self[var_node.offset + offset],
@@ -376,16 +377,38 @@ impl CpuState {
             state: HashMap::new(),
         }
     }
-    pub fn get_or_symbolic<'e>(&'e mut self, var_node: VarNode) -> &'e Expression {
+    pub fn get_or_symbolic<'e>(&'e mut self, size: u8, var_node: VarNode) -> Cow<'e, Expression> {
         let space = self.state.entry(var_node.id).or_default();
 
         if matches!(&space[var_node.offset], SpannedItem::Empty) {
             space.insert(var_node, Expression::from(ExpressionOp::var_reg(var_node)));
         }
 
+        let size_to_mask = |size: u8| (1u64.unbounded_shl(size as u32 * 8).wrapping_sub(1));
+
         match &space[var_node.offset] {
-            SpannedItem::Item(e) => e,
-            SpannedItem::ItemAt(a) => todo!("Register {var_node:?} overlaps value at {a}"),
+            SpannedItem::Item(e, size) if var_node.size >= *size => e, // bigger sizes are padded with 0s which `Expression` can take care of
+            SpannedItem::Item(e, size) => {
+                // asking for a smaller expression than stored
+                let mut output = e.clone();
+                let mask = size_to_mask(*size);
+                output.and(Expression::from(mask));
+                Cow::Owned(output)
+            }
+            SpannedItem::ItemAt(a) => {
+                if let SpannedItem::Item(e) = &space[*a] {
+                    let mut output = e.clone();
+                    let mask = Expression::from(match var_node.offset - *a {
+                        0 => unreachable!(),
+                        1 => 0xff00,
+                        2 => 0xff0000,
+                        ()
+                    });
+                    output.and(other);
+                } else {
+                    unreachable!()
+                }
+            }
             SpannedItem::Empty => unreachable!(),
         }
     }

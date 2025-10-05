@@ -100,7 +100,7 @@ struct PCodeToBasicBlocks {
     known_block_boundaries: HashSet<Address>,
 }
 
-fn get_state(v: pcode::Value, registers: &mut CpuState) -> Expression {
+fn get_state(v: pcode::Value, size: u8, registers: &mut CpuState) -> Expression {
     match v {
         pcode::Value::Var(var_node) => registers.get_or_symbolic(var_node).clone(),
         pcode::Value::Const(value, _size) => Expression::from(value),
