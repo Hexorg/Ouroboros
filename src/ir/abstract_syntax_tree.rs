@@ -259,7 +259,10 @@ fn define_all_variables(
         ExpressionOp::Value(_)
         | ExpressionOp::DestinationRegister(_)
         | ExpressionOp::Assign(_, _) => (),
-        ExpressionOp::Overflow(l, _) | ExpressionOp::CountOnes(l) | ExpressionOp::Not(l) => {
+        ExpressionOp::Interrupt(l)
+        | ExpressionOp::Overflow(l, _)
+        | ExpressionOp::CountOnes(l)
+        | ExpressionOp::Not(l) => {
             define_all_variables(scope, sese, expression, *l);
         }
         ExpressionOp::Multiequals(l, r)
@@ -366,24 +369,32 @@ fn add_program_segment(
             let false_block = build_block(scope, else_branch, hf, lang, sese);
             if matches!(false_block.last(), Some(AstStatement::Return { .. })) {
                 // if it's a return block, we don't need to draw else
-                ast_block.push(AstStatement::If {
-                    sese,
-                    condition: condition,
-                    true_statement: Box::new(AstStatement::Block(block)),
-                    true_branch: first_branch,
-                    else_statement: Box::new(AstStatement::Nop),
-                    else_branch,
-                });
+                if block.len() > 0 {
+                    // check if the IF body has any AST
+                    // ASM code may use if statements to just do stack cleaning, which doesn't need to be drawn.
+                    ast_block.push(AstStatement::If {
+                        sese,
+                        condition: condition,
+                        true_statement: Box::new(AstStatement::Block(block)),
+                        true_branch: first_branch,
+                        else_statement: Box::new(AstStatement::Nop),
+                        else_branch,
+                    });
+                }
                 ast_block.extend(false_block);
             } else {
-                ast_block.push(AstStatement::If {
-                    sese,
-                    condition: condition,
-                    true_statement: Box::new(AstStatement::Block(block)),
-                    true_branch: first_branch,
-                    else_statement: Box::new(AstStatement::Block(false_block)),
-                    else_branch,
-                });
+                if block.len() > 0 || false_block.len() > 0 {
+                    // check if the IF body has any AST
+                    // ASM code may use if statements to just do stack cleaning, which doesn't need to be drawn.
+                    ast_block.push(AstStatement::If {
+                        sese,
+                        condition: condition,
+                        true_statement: Box::new(AstStatement::Block(block)),
+                        true_branch: first_branch,
+                        else_statement: Box::new(AstStatement::Block(false_block)),
+                        else_branch,
+                    });
+                }
             }
         } else if is_loop {
             ast_block.push(AstStatement::Loop {
@@ -393,14 +404,18 @@ fn add_program_segment(
                 body_address: first_branch,
             });
         } else {
-            ast_block.push(AstStatement::If {
-                sese,
-                condition: condition,
-                true_statement: Box::new(AstStatement::Block(block)),
-                true_branch: first_branch,
-                else_statement: Box::new(AstStatement::Nop),
-                else_branch: BlockSlot::default(),
-            });
+            if block.len() > 0 {
+                // check if the IF body has any AST
+                // ASM code may use if statements to just do stack cleaning, which doesn't need to be drawn.
+                ast_block.push(AstStatement::If {
+                    sese,
+                    condition: condition,
+                    true_statement: Box::new(AstStatement::Block(block)),
+                    true_branch: first_branch,
+                    else_statement: Box::new(AstStatement::Nop),
+                    else_branch: BlockSlot::default(),
+                });
+            }
         }
     } else {
         panic!("Unexpected start of a program segment.")
@@ -423,7 +438,7 @@ fn add_return(
             {
                 stmts.push(AstStatement::Return {
                     sese,
-                    result: eax.clone(),
+                    result: eax.into_owned(),
                 });
             }
         }
@@ -498,7 +513,7 @@ fn add_call(
 ) {
     let mut params = Vec::new();
     if let Some(stack) = block.registers.get(lang.sp) {
-        let mut param_1 = stack.clone();
+        let mut param_1 = stack.into_owned();
         loop {
             param_1.add_value(4, InstructionSize::U32);
 

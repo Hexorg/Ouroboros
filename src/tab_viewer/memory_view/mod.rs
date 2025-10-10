@@ -57,10 +57,15 @@ impl MemoryView {
         let mut area = ScrollArea::both().auto_shrink(false).id_salt("MemoryView");
         if let Some(addr) = signals.is_requested_pos() {
             println!("Requesting new scroll offset to address {addr}");
-            area = area.vertical_scroll_offset(
-                (ui.spacing().interact_size.y + ui.spacing().item_spacing.y)
-                    * self.addr_row_map[&addr] as f32,
-            );
+            let row_height = (ui.spacing().interact_size.y + ui.spacing().item_spacing.y);
+            if let Some(row) = self.addr_row_map.get(&addr) {
+                area = area.vertical_scroll_offset(row_height * *row as f32);
+            } else {
+                let aligned = addr.0 - (addr.0 % 16);
+                if let Some(row) = self.addr_row_map.get(&Address(aligned)) {
+                    area = area.vertical_scroll_offset(row_height * *row as f32);
+                }
+            };
         }
 
         if self.row_addr_map.len() > 0 {

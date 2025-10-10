@@ -239,6 +239,8 @@ pub enum ExpressionOp {
     DestinationRegister(VarNode),
     /// A constant integer value, always unsigned
     Value(u64),
+    /// Interrupt with number
+    Interrupt(OpIdx),
 
     // === Memory Operations ===
     /// Memory dereference: `*operand`
@@ -389,6 +391,10 @@ fn remap_operands<T>(
         ExpressionOp::Dereference(p) => {
             remap_operands(src, *p, vec, map);
             vec.push(ExpressionOp::Dereference(vec.len() - 1));
+        }
+        ExpressionOp::Interrupt(p) => {
+            remap_operands(src, *p, vec, map);
+            vec.push(ExpressionOp::Interrupt(vec.len() - 1));
         }
         ExpressionOp::Overflow(p, sgn) => {
             remap_operands(src, *p, vec, map);
@@ -1199,6 +1205,10 @@ impl Expression {
         assert!(matches!(self.0.pop(), Some(ExpressionOp::Dereference(_))));
     }
 
+    pub fn interrupt(&mut self) {
+        self.0.push(ExpressionOp::Interrupt(self.get_entry_point()));
+    }
+
     /// Create an assignment expression: `this := other`.
     ///
     /// This represents an SSA assignment operation where the left side (this expression)
@@ -1519,6 +1529,11 @@ impl Expression {
                 self.recursive_print(*idx, f, lang)?;
                 f.write_str("]")
             }
+            ExpressionOp::Interrupt(idx) => {
+                f.write_str("INT(")?;
+                self.recursive_print(*idx, f, lang)?;
+                f.write_str(")")
+            }
             ExpressionOp::Overflow(idx, _) => {
                 f.write_str("overflow(")?;
                 self.recursive_print(*idx, f, lang)?;
@@ -1631,6 +1646,7 @@ impl Expression {
             | ExpressionOp::CountOnes(_)
             | ExpressionOp::Assign(_, _)
             | ExpressionOp::Dereference(_)
+            | ExpressionOp::Interrupt(_)
             | ExpressionOp::Variable(_) => 0,
             ExpressionOp::Multiequals(_, _) => 10,
             ExpressionOp::Add(_, _, _) | ExpressionOp::Sub(_, _, _) => 1,
@@ -1656,16 +1672,17 @@ impl Expression {
             true
         } else {
             match &self.0[start] {
-                ExpressionOp::Multiequals(_, _) => true,
                 ExpressionOp::DestinationRegister(_)
                 | ExpressionOp::Value(_)
-                | ExpressionOp::Overflow(_, _)
-                | ExpressionOp::CountOnes(_)
-                | ExpressionOp::Assign(_, _)
-                | ExpressionOp::Dereference(_)
                 | ExpressionOp::Variable(_) => false,
-                ExpressionOp::Not(l) => self.has_higher_precedence(*l, my_p),
-                ExpressionOp::Add(l, r, _)
+                ExpressionOp::Dereference(l)
+                | ExpressionOp::Interrupt(l)
+                | ExpressionOp::CountOnes(l)
+                | ExpressionOp::Overflow(l, _)
+                | ExpressionOp::Not(l) => self.has_higher_precedence(*l, my_p),
+                ExpressionOp::Multiequals(l, r)
+                | ExpressionOp::Assign(l, r)
+                | ExpressionOp::Add(l, r, _)
                 | ExpressionOp::Multiply(l, r, _)
                 | ExpressionOp::Less(l, r, _)
                 | ExpressionOp::GreaterOrEquals(l, r, _)
@@ -1702,6 +1719,7 @@ impl Expression {
         for op in other {
             self.0.push(match op {
                 Dereference(p) => Dereference(s(p)),
+                Interrupt(p) => Interrupt(s(p)),
                 Overflow(p, sgn) => Overflow(s(p), *sgn),
                 CountOnes(p) => CountOnes(s(p)),
                 Assign(l, r) => Assign(s(l), s(r)),
@@ -1926,6 +1944,7 @@ impl Expression {
             match op {
                 ExpressionOp::Dereference(l)
                 | ExpressionOp::Overflow(l, _)
+                | ExpressionOp::Interrupt(l)
                 | ExpressionOp::Not(l)
                 | ExpressionOp::CountOnes(l) => {
                     if *l >= from {
@@ -1968,6 +1987,7 @@ impl Expression {
                 ExpressionOp::Dereference(l)
                 | ExpressionOp::Overflow(l, _)
                 | ExpressionOp::Not(l)
+                | ExpressionOp::Interrupt(l)
                 | ExpressionOp::CountOnes(l) => {
                     if *l == original {
                         *l = new
@@ -2133,6 +2153,7 @@ impl Expression {
         for op in other {
             match op {
                 Dereference(p) => self.0.push(Dereference(s(p, ignore_under, new_pos))),
+                Interrupt(p) => self.0.push(Interrupt(s(p, ignore_under, new_pos))),
                 Overflow(p, sgn) => self.0.push(Overflow(s(p, ignore_under, new_pos), *sgn)),
                 CountOnes(p) => self.0.push(CountOnes(s(p, ignore_under, new_pos))),
                 Assign(l, r) => self.0.push(Assign(

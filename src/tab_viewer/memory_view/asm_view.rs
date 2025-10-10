@@ -226,13 +226,12 @@ pub fn draw_bb(
             ui.end_row();
         }
     });
-    let n = Expression::from(0);
-    let esp = block
-        .registers
-        .get(lang.sp)
-        .unwrap_or(&n)
-        .with_sleigh_language(lang);
-    ui.label(format!("ESP State: {esp}"));
+    if let Some(esp) = block.registers.get(lang.sp) {
+        let esp = esp.as_ref().with_sleigh_language(lang);
+        ui.label(format!("ESP State: {esp}"));
+    } else {
+        ui.label(format!("ESP State not set."));
+    }
     r
 }
 
@@ -312,7 +311,7 @@ pub fn draw(
         if end_addr.0 > my_max_addr {
             end_addr.0 = my_max_addr;
         }
-        println!("Drawing instructions from {current_addr} to {end_addr}");
+
         Grid::new(state.addr).striped(true).show(ui, |ui| {
             let mut iter = instr.iter();
             let i = iter
@@ -340,7 +339,7 @@ pub fn draw(
                     signals.request_pos(i.inst_start.into());
                 }
                 if ui.ctx().input(|r| r.key_pressed(egui::Key::F)) {
-                    signals.define_function(i.inst_start.into());
+                    signals.define_function(i.inst_start);
                 }
             }
 
@@ -362,7 +361,7 @@ pub fn draw(
                         egui::StrokeKind::Inside,
                     );
                     if ui.ctx().input(|r| r.key_pressed(egui::Key::F)) {
-                        signals.define_function(i.inst_start.into());
+                        signals.define_function(i.inst_start);
                     }
                 }
                 if i.inst_start >= end_addr.0 {

@@ -226,6 +226,14 @@ impl BlockStorage {
     pub fn iter_path<'i>(&'i self, start: BlockSlot) -> BlockPathIterator<'i> {
         BlockPathIterator::new(self, start)
     }
+
+    /// Iterate over all blocks as (BlockSlot, &BasicBlock) pairs
+    pub fn iter(&self) -> impl Iterator<Item = (BlockSlot, &BasicBlock)> {
+        self.blocks
+            .iter()
+            .enumerate()
+            .map(|(idx, block)| (BlockSlot(idx), block))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -320,6 +328,19 @@ impl<T> SpannedItem<T> {
                 panic!("Tried to get register, but its value is stored at offset {d}")
             }
             Self::Empty => panic!("unwrapped spanned register state is empty."),
+        }
+    }
+}
+
+impl<T> std::fmt::Display for SpannedItem<T>
+where
+    T: std::fmt::Display,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Item(t, _) => write!(f, "{t}"),
+            Self::ItemAt(d) => write!(f, "ItemAt({d})"),
+            Self::Empty => write!(f, "Empty"),
         }
     }
 }
@@ -430,14 +451,23 @@ impl CpuState {
         self.state.len()
     }
 
-    pub fn get(&self, var_node: VarNode) -> Option<&Expression> {
-        match self
-            .state
-            .get(&var_node.id)
-            .and_then(|s| Some(&s[var_node.offset]))
-        {
-            Some(SpannedItem::Item(e, _)) => Some(e),
-            Some(SpannedItem::ItemAt(a)) => todo!("Register {var_node:?} overlaps value at {a}"),
+    pub fn get<'e>(&'e self, var_node: VarNode) -> Option<Cow<'e, Expression>> {
+        let storage = self.state.get(&var_node.id)?;
+        match &storage[var_node.offset] {
+            SpannedItem::Item(e, _) => Some(Cow::Borrowed(e)),
+            SpannedItem::ItemAt(a) => match &storage[*a] {
+                SpannedItem::Item(e, _) => {
+                    let size_to_mask =
+                        |size: u8| (1u64.unbounded_shl(size as u32 * 8).wrapping_sub(1));
+
+                    let mask = size_to_mask(var_node.size) << (var_node.offset * 8);
+
+                    let mut modified = e.clone();
+                    modified.and(&Expression::from(mask));
+                    Some(Cow::Owned(modified))
+                }
+                i => panic!("Malformed CpuState storageL Item({a}) points to {i:?}"),
+            },
             _ => None,
         }
     }
@@ -595,9 +625,7 @@ impl BasicBlock {
             other: &'a BasicBlock,
         ) -> impl Fn(&VariableSymbol) -> Option<Cow<'a, Expression>> {
             |var: &VariableSymbol| match var {
-                VariableSymbol::Varnode(r) => {
-                    other.registers.get(*r).and_then(|v| Some(Cow::Borrowed(v)))
-                }
+                VariableSymbol::Varnode(r) => other.registers.get(*r),
                 VariableSymbol::CallResult { .. } => None,
                 VariableSymbol::Ram(d, size) => {
                     let mut r = d.clone();

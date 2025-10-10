@@ -2,6 +2,7 @@
 
 [![Rust](https://img.shields.io/badge/language-Rust-orange?logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT%2FApache-blue.svg)](https://github.com/Hexorg/Ouroboros#license)
+![CI/CD](https://github.com/Hexorg/Ouroboros/actions/workflows/rust.yml/badge.svg)
 [![egui_version](https://img.shields.io/badge/egui-0.32-blue)](https://github.com/emilk/egui)
 
 A fast, research-friendly decompiler built in Rust that recovers high-level structure from binaries using **symbolic execution**, **constraint tracking** instead of single static assignment IR models (though it can ingest SSA IR). It emphasizes block pre/post conditions, register/memory deltas, dominator/post-dominator analysis, and structured reconstruction (if/else, loops, SESE regions).

@@ -90,7 +90,7 @@ pub fn lift(
         //         println!("\t{:?}\t{:?}", pcode.op, pcode)
         //     }
         // }
-        my_lifter.lift(pcode);
+        my_lifter.lift(pcode, lang);
     }
     println!("Created {} blocks", my_lifter.blocks.len());
     my_lifter.blocks
@@ -137,7 +137,7 @@ impl PCodeToBasicBlocks {
         }
     }
 
-    fn lift(&mut self, pcode_block: &pcode::Block) {
+    fn lift(&mut self, pcode_block: &pcode::Block, lang: &SleighLanguage) {
         fn add_block(
             current_block: &mut BasicBlock,
             current_block_start_marker: &mut Option<Address>,
@@ -230,7 +230,7 @@ impl PCodeToBasicBlocks {
                     left.and(&right);
                     self.current_block.registers.set_state(pcode.output, left);
                 }
-                IntXor => {
+                BoolXor | IntXor => {
                     let mut left =
                         get_state(pcode.inputs.first(), &mut self.current_block.registers)
                             .into_owned();
@@ -412,6 +412,20 @@ impl PCodeToBasicBlocks {
                     left.or(&right);
                     self.current_block.registers.set_state(pcode.output, left);
                 }
+                PcodeOp(custom_op) => match lang.processor.as_str() {
+                    "x86" => match custom_op {
+                        16 => {
+                            // Software Interrup
+                            let mut left =
+                                get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                                    .into_owned();
+                            left.interrupt();
+                            self.current_block.registers.set_state(pcode.output, left);
+                        }
+                        n => todo!("Implement support for custom opcode {} on x86", n),
+                    },
+                    cpu => todo!("Implement support for custom opcode {custom_op} on {cpu}"),
+                },
                 PcodeBranch(lbl) => {
                     let condition =
                         get_state(pcode.inputs.first(), &mut self.current_block.registers)

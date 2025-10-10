@@ -2,7 +2,6 @@ mod ir;
 mod loaders;
 mod memory;
 mod symbol_resolver;
-mod test;
 
 use std::{
     fs::File,
@@ -25,9 +24,10 @@ use ir::{
     type_system::VariableType,
 };
 use memory::{LiteralState, Memory};
-use sleigh_compile::ldef::SleighLanguage;
+
 use tab_viewer::{
-    BlockGraph, Decompiler, MemoryView, SectionListView, SignalKind, TabKind, TabSignals, TabViewer,
+    BlockGraph, Decompiler, MemoryView, NavigationView, SectionListView, SignalKind, TabKind,
+    TabSignals, TabViewer,
 };
 
 struct DecompilerApp {
@@ -35,12 +35,10 @@ struct DecompilerApp {
     current_function: Option<Address>,
     signals: TabSignals,
     tree: DockState<TabKind>,
-    buttons: [(&'static str, TabKind); 4],
+    buttons: [(&'static str, TabKind); 5],
 }
 
 fn main() -> eframe::Result {
-    // ir::lift_with_sleigh(test::EXAMPLE_CODE_RIP, test::EXAMPLE_CODE);
-    // env_lo::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1280., 768.0]),
         ..Default::default()
@@ -69,6 +67,7 @@ fn main() -> eframe::Result {
                 ),
                 ("Decompiler", TabKind::Decompiler(Decompiler::new(style))),
                 ("Block Graph", TabKind::BlockGraph(BlockGraph::new())),
+                ("Navigation", TabKind::Navigation(NavigationView::new())),
             ];
 
             let mut tree =
@@ -89,13 +88,8 @@ fn main() -> eframe::Result {
 
             let mut signals = TabSignals::new();
 
-            if let Ok(open) = std::env::var("OUROBOROS_AUTOOPEN") {
-                let mut file = File::open(open).unwrap();
-                let mut buf = Vec::new();
-                file.read_to_end(&mut buf).unwrap();
-                loaders::goblin::load(&buf, &mut memory).unwrap();
-
-                signals.announce_new_file();
+            if let Ok(path) = std::env::var("OUROBOROS_AUTOOPEN") {
+                loaders::load(path, &mut memory, &mut signals).unwrap();
             }
 
             Ok(Box::new(DecompilerApp {
@@ -120,11 +114,7 @@ impl eframe::App for DecompilerApp {
                             .set_title("Open an executable file")
                             .pick_file()
                         {
-                            let mut file = File::open(binary.as_path()).unwrap();
-                            let mut buf = Vec::new();
-                            file.read_to_end(&mut buf).unwrap();
-                            loaders::goblin::load(&buf, &mut self.memory).unwrap();
-                            self.signals.announce_new_file();
+                            loaders::load(binary, &mut self.memory, &mut self.signals).unwrap();
                         }
                     }
                 });
@@ -188,10 +178,11 @@ impl eframe::App for DecompilerApp {
                         });
                 }
                 DefineFunctionStart(f) => {
+                    if self.memory.ir.get_by_address(*f).is_none() {
+                        is_repopulate = mark_instructions(*f, &mut self.memory);
+                    }
                     let hf = HighFunction::from_mem(*f, &self.memory);
-                    let mut s = Vec::new();
-                    hf.pts.pretty_print_self(&mut s);
-                    println!("{}", String::from_utf8(s).unwrap());
+
                     hf.fill_global_symbols(&mut self.memory);
                     hf.take_interval_ownership(&mut self.memory.navigation.function_span);
 
@@ -201,79 +192,7 @@ impl eframe::App for DecompilerApp {
                     self.current_function = Some(*f);
                 }
                 MarkInstruction(addr) => {
-                    let addr = *addr;
-                    let state = self.memory.literal.get_at_point_mut(addr).unwrap();
-                    match &mut state.kind {
-                        memory::LiteralKind::Data(items) => {
-                            let offset = (addr.0 - state.addr.0) as usize;
-                            let instructions = LiteralState::from_machine_code(
-                                std::borrow::Cow::Borrowed(&items[offset..]),
-                                addr.0,
-                                &self.memory.lang,
-                            )
-                            .unwrap();
-
-                            let consumed_size = instructions
-                                .get_instructions()
-                                .last()
-                                .and_then(|i| Some(i.inst_next - state.addr.0))
-                                .unwrap_or(0)
-                                as usize
-                                - offset;
-                            let mut left_over = std::mem::take(items);
-                            let mut tmp = left_over.split_off(offset);
-                            if left_over.len() > 0 {
-                                // println!("Segment has {} bytes left over...", left_over.len());
-                                let literal = LiteralState::from_bytes(state.addr, left_over);
-                                _ = self
-                                    .memory
-                                    .literal
-                                    .remove_overlapping(literal.get_interval());
-                                println!("Adding left-over data: {:?}", literal.get_interval());
-                                self.memory
-                                    .literal
-                                    .insert_strict(literal.get_interval(), literal)
-                                    .unwrap();
-                                is_repopulate = true;
-                            }
-                            let remainder = tmp.split_off(consumed_size);
-                            if remainder.len() > 0 {
-                                let addr: Address = instructions
-                                    .get_instructions()
-                                    .last()
-                                    .and_then(|i| Some(i.inst_next))
-                                    .unwrap_or(addr.0)
-                                    .into();
-                                let literal = LiteralState::from_bytes(addr, remainder);
-                                _ = self
-                                    .memory
-                                    .literal
-                                    .remove_overlapping(literal.get_interval());
-                                println!("Adding remainder data: {:?}", literal.get_interval());
-                                self.memory
-                                    .literal
-                                    .insert_strict(literal.get_interval(), literal)
-                                    .unwrap();
-                                is_repopulate = true;
-                            }
-                            if instructions.kind.size() > 0 {
-                                let bs = std::mem::take(&mut self.memory.ir);
-                                let ir = ir::lift(
-                                    instructions.get_instructions(),
-                                    &self.memory.lang,
-                                    Some(bs),
-                                );
-                                self.memory.ir = ir;
-                                println!("Adding instructions {:?}", instructions.get_interval());
-                                self.memory
-                                    .literal
-                                    .insert_strict(instructions.get_interval(), instructions)
-                                    .unwrap();
-                                is_repopulate = true;
-                            }
-                        }
-                        memory::LiteralKind::Instruction(_, _) => (),
-                    }
+                    is_repopulate = mark_instructions(*addr, &mut self.memory);
                 }
             }
         }
@@ -281,4 +200,70 @@ impl eframe::App for DecompilerApp {
             self.signals.repopulate_instruction_rows();
         }
     }
+}
+
+fn mark_instructions(addr: Address, memory: &mut Memory) -> bool {
+    let state = memory.literal.get_at_point_mut(addr).unwrap();
+    let mut is_repopulate = false;
+    match &mut state.kind {
+        memory::LiteralKind::Data(items) => {
+            let offset = (addr.0 - state.addr.0) as usize;
+            let instructions = LiteralState::from_machine_code(
+                std::borrow::Cow::Borrowed(&items[offset..]),
+                addr.0,
+                &memory.lang,
+            )
+            .unwrap();
+
+            let consumed_size = instructions
+                .get_instructions()
+                .last()
+                .and_then(|i| Some(i.inst_next - state.addr.0))
+                .unwrap_or(0) as usize
+                - offset;
+            let mut left_over = std::mem::take(items);
+            let mut tmp = left_over.split_off(offset);
+            if left_over.len() > 0 {
+                // println!("Segment has {} bytes left over...", left_over.len());
+                let literal = LiteralState::from_bytes(state.addr, left_over);
+                _ = memory.literal.remove_overlapping(literal.get_interval());
+                println!("Adding left-over data: {:?}", literal.get_interval());
+                memory
+                    .literal
+                    .insert_strict(literal.get_interval(), literal)
+                    .unwrap();
+                is_repopulate = true;
+            }
+            let remainder = tmp.split_off(consumed_size);
+            if remainder.len() > 0 {
+                let addr: Address = instructions
+                    .get_instructions()
+                    .last()
+                    .and_then(|i| Some(i.inst_next))
+                    .unwrap_or(addr.0)
+                    .into();
+                let literal = LiteralState::from_bytes(addr, remainder);
+                _ = memory.literal.remove_overlapping(literal.get_interval());
+                println!("Adding remainder data: {:?}", literal.get_interval());
+                memory
+                    .literal
+                    .insert_strict(literal.get_interval(), literal)
+                    .unwrap();
+                is_repopulate = true;
+            }
+            if instructions.kind.size() > 0 {
+                let bs = std::mem::take(&mut memory.ir);
+                let ir = ir::lift(instructions.get_instructions(), &memory.lang, Some(bs));
+                memory.ir = ir;
+                println!("Adding instructions {:?}", instructions.get_interval());
+                memory
+                    .literal
+                    .insert_strict(instructions.get_interval(), instructions)
+                    .unwrap();
+                is_repopulate = true;
+            }
+        }
+        memory::LiteralKind::Instruction(_, _) => (),
+    }
+    is_repopulate
 }

@@ -1,6 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
-use petgraph::{algo::dominators::Dominators, csr::DefaultIx, visit::IntoNeighbors};
+use petgraph::{
+    algo::dominators::Dominators,
+    csr::DefaultIx,
+    visit::{IntoNeighbors, IntoNodeReferences},
+};
 
 use super::{
     basic_block::{BlockSlot, BlockStorage, NextBlock},
@@ -44,18 +48,13 @@ impl ProgramTreeStructure {
         let (pts_root, program_tree_structure) =
             build_program_tree_structure(&cfg.dom, &cfg.pdom, &seses, start_node, end_node);
 
-        let mut tree = HashMap::from_iter(program_tree_structure.iter().map(|(k, v)| {
+        let tree = HashMap::from_iter(program_tree_structure.iter().map(|(k, v)| {
             (
                 seseix_to_seseaddr(blocks, *k, &cfg),
                 Vec::from_iter(v.iter().map(|i| seseix_to_seseaddr(blocks, *i, &cfg))),
             )
         }));
-        let mut pts_root = seseix_to_seseaddr(blocks, pts_root, &cfg);
-        let single_end = cfg.single_end();
-        if pts_root.0 != cfg.start || pts_root.1 != single_end {
-            tree.insert(SingleEntrySingleExit(cfg.start, single_end), vec![pts_root]); // Add the whole function as a SESE as the used algorithm does not
-            pts_root = SingleEntrySingleExit(cfg.start, single_end);
-        }
+        let pts_root = seseix_to_seseaddr(blocks, pts_root, &cfg);
         let mut lookup_table = HashMap::new();
         compute_sese_address_ranges(
             &mut lookup_table,
@@ -67,11 +66,18 @@ impl ProgramTreeStructure {
             cfg.start,
             pts_root,
         );
-        Self {
+
+        let pts = Self {
             root: pts_root,
             tree,
             block_ownership_table: lookup_table,
-        }
+        };
+
+        let mut s = Vec::new();
+        pts.pretty_print_self(&mut s).unwrap();
+        println!("PTS:\n{}", String::from_utf8(s).unwrap());
+
+        pts
     }
 
     pub fn get_children(
@@ -265,10 +271,9 @@ where
 {
     let mut pts = HashMap::new();
     let mut stack: Vec<SingleEntrySingleExit<N>> = Vec::new();
-    let largest = seses
-        .first()
-        .copied()
-        .unwrap_or(SingleEntrySingleExit(start, end));
+    let root = SingleEntrySingleExit(start, end);
+    let mut root_children = Vec::new();
+
     for sese in seses {
         while let Some(top) = stack.last() {
             let start_top_dominates_sese = is_ancestor(top.0, sese.0, &dom);
@@ -298,11 +303,19 @@ where
             let children = pts.entry(*top).or_insert(Vec::new());
             children.push(*sese);
         } else {
+            // No parent on stack means this is a root-level SESE
             pts.insert(*sese, Vec::new());
+            root_children.push(*sese);
         }
         stack.push(*sese);
     }
-    (largest, pts)
+
+    // Add all root-level SESEs as children of the implicit root
+    if !root_children.is_empty() {
+        pts.insert(root, root_children);
+    }
+
+    (root, pts)
 }
 
 /// The closure needs to output if it has written anything to the buffer

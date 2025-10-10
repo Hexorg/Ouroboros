@@ -8,6 +8,7 @@ use crate::{
 mod bb_graph;
 mod decompiler;
 mod memory_view;
+mod navigation;
 mod section_list;
 // mod terminal;
 mod theme;
@@ -17,6 +18,7 @@ pub use theme::{CodeTheme, TokenType};
 pub use bb_graph::BlockGraph;
 pub use decompiler::Decompiler;
 pub use memory_view::MemoryView;
+pub use navigation::NavigationView;
 pub use section_list::SectionListView;
 // pub use terminal::TerminalView;
 
@@ -104,6 +106,16 @@ impl TabSignals {
         })
     }
 
+    pub fn is_define_funtion(&self) -> Option<Address> {
+        self.signals.iter().find_map(|p| {
+            if let SignalKind::DefineFunctionStart(p) = p {
+                Some(*p)
+            } else {
+                None
+            }
+        })
+    }
+
     pub fn announce_new_file(&mut self) {
         use SignalKind::NewOpenFile;
         self.new_signals.push(NewOpenFile);
@@ -119,9 +131,9 @@ impl TabSignals {
         self.new_signals.push(MarkInstruction(addr));
     }
 
-    pub fn define_function(&mut self, addr: Address) {
+    pub fn define_function<A: Into<Address>>(&mut self, addr: A) {
         use SignalKind::DefineFunctionStart;
-        self.new_signals.push(DefineFunctionStart(addr));
+        self.new_signals.push(DefineFunctionStart(addr.into()));
     }
 
     pub fn request_pos(&mut self, addr: Address) {
@@ -155,6 +167,7 @@ pub enum TabKind {
     Decompiler(Decompiler),
     BlockGraph(BlockGraph),
     Sections(SectionListView),
+    Navigation(NavigationView),
     // Terminal(TerminalView),
 }
 
@@ -202,6 +215,7 @@ impl<'m> egui_dock::TabViewer for TabViewer<'m> {
                 .map(|f| format!("Block graph: FUN_{:x}", f.0))
                 .unwrap_or("Block graph: No function".into())
                 .into(),
+            TabKind::Navigation(_) => "Navigation".into(),
             // TabKind::Terminal(t) => t.title().into(),
         }
     }
@@ -222,6 +236,7 @@ impl<'m> egui_dock::TabViewer for TabViewer<'m> {
                 b.draw(ui, self.memory, self.current_function, &mut self.signals)
             }
             TabKind::Sections(s) => s.draw(ui, &mut self.signals, self.memory),
+            TabKind::Navigation(n) => n.draw(ui, &mut self.signals, self.memory),
         }
     }
 
@@ -231,6 +246,7 @@ impl<'m> egui_dock::TabViewer for TabViewer<'m> {
             TabKind::Decompiler(_) => "Decompiler".into(),
             TabKind::BlockGraph(_) => "BlockGraph".into(),
             TabKind::Sections(_) => "Sections".into(),
+            TabKind::Navigation(_) => "Navigation".into(),
         }
     }
 }

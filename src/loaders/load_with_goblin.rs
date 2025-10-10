@@ -1,12 +1,17 @@
 use crate::memory::{navigation::Section, Memory};
 use crate::memory::{LiteralKind, LiteralState};
+use crate::tab_viewer::TabSignals;
 use goblin::{error, Object};
 use std::borrow::Cow;
 use std::env;
 use std::fs;
 use std::path::Path;
 
-pub fn load<'s>(bytes: &'s [u8], memory: &mut Memory) -> Result<(), error::Error> {
+pub fn load<'s>(
+    bytes: &'s [u8],
+    memory: &mut Memory,
+    signals: &mut TabSignals,
+) -> Result<(), super::LoaderError> {
     let o = Object::parse(&bytes)?;
     match o {
         Object::Elf(elf) => {
@@ -29,27 +34,33 @@ pub fn load<'s>(bytes: &'s [u8], memory: &mut Memory) -> Result<(), error::Error
                 .sections
                 .push(Section::new("Headers".into(), pe.image_base, 1024));
             for section in pe.sections {
-                let data = section.data(bytes).unwrap().unwrap();
-                if memory.navigation.sections.len() == 1 {
-                    let bytes = &bytes[0..section.pointer_to_raw_data as usize];
-                    let literal = LiteralState::from_bytes(pe.image_base, bytes.to_vec());
-                    memory.navigation.sections.first_mut().unwrap().virtual_size =
-                        section.pointer_to_raw_data as usize;
+                if let Some(data) = section.data(bytes)? {
+                    if memory.navigation.sections.len() == 1 {
+                        let bytes = &bytes[0..section.pointer_to_raw_data as usize];
+                        let literal = LiteralState::from_bytes(pe.image_base, bytes.to_vec());
+                        memory.navigation.sections[0].virtual_size =
+                            section.pointer_to_raw_data as usize;
+                        memory
+                            .literal
+                            .insert_strict(literal.get_interval(), literal)
+                            .unwrap();
+                    }
+                    let mut section = Section::from(&section);
+                    // if section.virtual_address.0 as u32 == section.pointer_to_raw_data {
+                    section.virtual_address.0 += pe.image_base;
+                    // }
+                    let literal =
+                        LiteralState::from_bytes(section.virtual_address, data.into_owned());
+                    memory.navigation.sections.push(section);
                     memory
                         .literal
                         .insert_strict(literal.get_interval(), literal)
                         .unwrap();
+                } else {
+                    return Err(super::LoaderError::MalformedFile(
+                        "Section offsets are outside of file content size.".into(),
+                    ));
                 }
-                let mut section = Section::from(&section);
-                // if section.virtual_address.0 as u32 == section.pointer_to_raw_data {
-                section.virtual_address.0 += pe.image_base;
-                // }
-                let literal = LiteralState::from_bytes(section.virtual_address, data.into_owned());
-                memory.navigation.sections.push(section);
-                memory
-                    .literal
-                    .insert_strict(literal.get_interval(), literal)
-                    .unwrap();
             }
             // pe.image_base
             // for entry in pe.imports {
@@ -60,6 +71,8 @@ pub fn load<'s>(bytes: &'s [u8], memory: &mut Memory) -> Result<(), error::Error
             //         println!("{entry:?}")
             //     }
             // }
+            println!("Entry point: 0x{:x}", pe.entry as u64 + pe.image_base);
+            signals.define_function(pe.entry as u64 + pe.image_base);
         }
         Object::TE(te) => todo!(),
         Object::COFF(coff) => todo!(),
