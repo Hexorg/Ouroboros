@@ -97,7 +97,13 @@ impl LiteralState {
                     let start = (i.inst_next - base_addr) as usize;
                     decoder.set_inst(i.inst_next, &bytes[start..]);
                     instrs.push(i);
-                    if bytes[start..(start + 16)].iter().all(|b| *b == 0) {
+                    // get the data available at address, if any,
+                    // at most 16 bytes.
+                    let bytes_range = &bytes
+                        .get(start..)
+                        .map(|range| &range[..range.len().min(16)])
+                        .unwrap_or(&[]);
+                    if bytes_range.iter().all(|b| *b == 0) {
                         // Assuming no valid instructions compose 16 zero bytes.
                         break;
                     }
