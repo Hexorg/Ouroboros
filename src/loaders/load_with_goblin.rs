@@ -25,6 +25,54 @@ pub fn load<'s>(
                     entry
                 );
             }
+            for section in &elf.section_headers {
+                use goblin::elf::section_header::*;
+                // ignore those sections
+                // TODO add more sections to ignore or proper load it, like
+                // the dynamic sections
+                if matches!(section.sh_type, SHT_NULL | SHT_NOTE) {
+                    continue;
+                }
+                if section.sh_addr == 0 || section.sh_size == 0 {
+                    // empty section, ignore it
+                    continue;
+                }
+                let section_offset = section.file_range();
+                let section_bytes = section_offset
+                    .map(|range| {
+                        bytes.get(range.clone()).ok_or_else(|| {
+                            super::LoaderError::MalformedFile(format!(
+                                "Section offsets are outside ({:#X}..{:#X}) of file content size.",
+                                range.start, range.end,
+                            ))
+                        })
+                    })
+                    .transpose()?;
+
+                let name = elf.shdr_strtab.get_at(section.sh_name).unwrap_or("NoName");
+                memory.navigation.sections.push(Section::new(
+                    name.into(),
+                    section.sh_addr,
+                    section.sh_size.try_into().unwrap(),
+                ));
+                // its possible that section_bytes is smaller then the section size
+                // this happen in case the data is unitialized, in this case
+                // we just create a buffer with zeros
+                let mut section_raw = vec![0u8; section.sh_size.try_into().unwrap()];
+                if let Some(section_bytes) = section_bytes {
+                    section_raw.copy_from_slice(section_bytes);
+                }
+                let literal = LiteralState::from_bytes(section.sh_addr, section_raw);
+                memory
+                    .literal
+                    .insert_strict(literal.get_interval(), literal)
+                    .unwrap();
+            }
+            // add the entry points from the ELF
+            if elf.entry != 0 {
+                println!("Entry point: 0x{:x}", elf.entry);
+                signals.define_function(elf.entry);
+            }
         }
         Object::PE(pe) => {
             // Load all sections into memory
