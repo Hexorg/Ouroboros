@@ -10,7 +10,10 @@ use super::{
     program_tree_structure::ProgramTreeStructure,
     Expression, ExpressionOp, VariableSymbol,
 };
-use crate::{ir::expression::InstructionSize, memory::Memory};
+use crate::{
+    ir::expression::{InstructionSize, OpIdx},
+    memory::Memory,
+};
 
 use super::{Address, BasicBlock};
 
@@ -68,8 +71,11 @@ fn analysis(
         }
         NextBlock::Return => {
             let stack_state = composed_block.registers.get(sp).unwrap();
-            if stack_state.get_entry_point() != 0
-                || !matches!(stack_state.get(0), ExpressionOp::Variable(_))
+            if stack_state.get_entry_point().as_idx() != 0
+                || !matches!(
+                    stack_state.get(OpIdx::from_idx(0)),
+                    ExpressionOp::Variable(_)
+                )
             {
                 println!(
                     "TODO: Function returns at {} Non-initial stack pointer: ESP = {}",
