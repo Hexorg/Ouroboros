@@ -3,7 +3,7 @@ use sleigh_compile::ldef::SleighLanguage;
 use crate::{
     ir::{
         basic_block::{BlockSlot, DestinationKind, NextBlock},
-        expression::InstructionSize,
+        expression::{InstructionSize, OpIdx},
         high_function::CallingConvention,
         type_system::VariableType,
     },
@@ -16,8 +16,6 @@ use super::{
     scope::{Scope, VariableDefinition},
     Address, BasicBlock, Expression, ExpressionOp, VariableSymbol,
 };
-
-type OpIdx = usize;
 
 pub struct AbstractSyntaxTree {
     pub scope: Scope,
@@ -153,10 +151,12 @@ impl AbstractSyntaxTree {
         match hf.calling_convention {
             CallingConvention::Cdecl => {
                 for addr in &hf.memory_read {
-                    if let ExpressionOp::Variable(VariableSymbol::Varnode(r)) = addr.get(0) {
+                    if let ExpressionOp::Variable(VariableSymbol::Varnode(r)) =
+                        addr.get(OpIdx::from_idx(0))
+                    {
                         if r == &mem.lang.sp {
-                            if let ExpressionOp::Value(_) = addr.get(1) {
-                                if let ExpressionOp::Add(_, _, _) = addr.get(2) {
+                            if let ExpressionOp::Value(_) = addr.get(OpIdx::from_idx(1)) {
+                                if let ExpressionOp::Add(_, _, _) = addr.get(OpIdx::from_idx(2)) {
                                     args.push(VariableSymbol::Ram(Box::new(addr.clone()), 4));
                                 }
                             }
@@ -226,7 +226,7 @@ fn define_all_variables(
     scope: &mut Scope,
     sese: SingleEntrySingleExit<BlockSlot>,
     expression: &Expression,
-    pos: usize,
+    pos: OpIdx,
 ) {
     match &expression[pos] {
         ExpressionOp::Dereference(d) => {

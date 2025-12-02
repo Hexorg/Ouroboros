@@ -42,7 +42,10 @@
 //! "at the end of the block, all varnodes have state `Expression`, and all written RAM addresses
 //! have state `Expression`".
 
-use std::{borrow::Cow, ops::Index};
+use std::{
+    borrow::Cow,
+    ops::{Index, IndexMut, RangeFrom},
+};
 
 use crate::ir::basic_block::DestinationKind;
 
@@ -163,7 +166,13 @@ impl Index<OpIdx> for Expression {
     type Output = ExpressionOp;
 
     fn index(&self, index: OpIdx) -> &Self::Output {
-        self.0.index(index)
+        &self.0[index.as_idx()]
+    }
+}
+
+impl IndexMut<OpIdx> for Expression {
+    fn index_mut(&mut self, index: OpIdx) -> &mut Self::Output {
+        &mut self.0[index.as_idx()]
     }
 }
 
@@ -339,7 +348,17 @@ pub struct Expression(SmallVec<[ExpressionOp; SMALLVEC_SIZE]>);
 ///
 /// Currently `usize` but could be optimized to `u8`. If SMALLVEC_SIZE stays at 12,
 /// This change would save ~100 bytes per expression at the cost of converting `u8` to `usize`.
-type OpIdx = usize;
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct OpIdx(usize);
+
+impl OpIdx {
+    pub(crate) fn as_idx(&self) -> usize {
+        self.0
+    }
+    pub(crate) fn from_idx(idx: usize) -> Self {
+        Self(idx)
+    }
+}
 
 impl From<u64> for Expression {
     fn from(value: u64) -> Self {
@@ -384,141 +403,141 @@ fn remap_operands<T>(
 ) where
     T: Copy + FnMut(&ExpressionOp, &[ExpressionOp]) -> ExpressionOp,
 {
-    match &src[pos] {
+    match &src[pos.as_idx()] {
         e @ ExpressionOp::Variable(_)
         | e @ ExpressionOp::DestinationRegister(_)
         | e @ ExpressionOp::Value(_) => vec.push(map(e, vec)),
         ExpressionOp::Dereference(p) => {
             remap_operands(src, *p, vec, map);
-            vec.push(ExpressionOp::Dereference(vec.len() - 1));
+            vec.push(ExpressionOp::Dereference(OpIdx::from_idx(vec.len() - 1)));
         }
         ExpressionOp::Interrupt(p) => {
             remap_operands(src, *p, vec, map);
-            vec.push(ExpressionOp::Interrupt(vec.len() - 1));
+            vec.push(ExpressionOp::Interrupt(OpIdx::from_idx(vec.len() - 1)));
         }
         ExpressionOp::Overflow(p, sgn) => {
             remap_operands(src, *p, vec, map);
-            vec.push(ExpressionOp::Overflow(vec.len() - 1, *sgn));
+            vec.push(ExpressionOp::Overflow(OpIdx::from_idx(vec.len() - 1), *sgn));
         }
         ExpressionOp::CountOnes(p) => {
             remap_operands(src, *p, vec, map);
-            vec.push(ExpressionOp::CountOnes(vec.len() - 1));
+            vec.push(ExpressionOp::CountOnes(OpIdx::from_idx(vec.len() - 1)));
         }
         ExpressionOp::Assign(l, r) => {
             remap_operands(src, *l, vec, map);
-            let l = vec.len() - 1;
+            let l = OpIdx::from_idx(vec.len() - 1);
             remap_operands(src, *r, vec, map);
-            let r = vec.len() - 1;
+            let r = OpIdx::from_idx(vec.len() - 1);
             vec.push(ExpressionOp::Assign(l, r));
         }
         ExpressionOp::Multiequals(l, r) => {
             remap_operands(src, *l, vec, map);
-            let l = vec.len() - 1;
+            let l = OpIdx::from_idx(vec.len() - 1);
             remap_operands(src, *r, vec, map);
-            let r = vec.len() - 1;
+            let r = OpIdx::from_idx(vec.len() - 1);
             vec.push(ExpressionOp::Multiequals(l, r));
         }
         ExpressionOp::Add(l, r, size) => {
             remap_operands(src, *l, vec, map);
-            let l = vec.len() - 1;
+            let l = OpIdx::from_idx(vec.len() - 1);
             remap_operands(src, *r, vec, map);
-            let r = vec.len() - 1;
+            let r = OpIdx::from_idx(vec.len() - 1);
             vec.push(ExpressionOp::Add(l, r, *size));
         }
         ExpressionOp::Sub(l, r, size) => {
             remap_operands(src, *l, vec, map);
-            let l = vec.len() - 1;
+            let l = OpIdx::from_idx(vec.len() - 1);
             remap_operands(src, *r, vec, map);
-            let r = vec.len() - 1;
+            let r = OpIdx::from_idx(vec.len() - 1);
             vec.push(ExpressionOp::Sub(l, r, *size));
         }
         ExpressionOp::Multiply(l, r, size) => {
             remap_operands(src, *l, vec, map);
-            let l = vec.len() - 1;
+            let l = OpIdx::from_idx(vec.len() - 1);
             remap_operands(src, *r, vec, map);
-            let r = vec.len() - 1;
+            let r = OpIdx::from_idx(vec.len() - 1);
             vec.push(ExpressionOp::Multiply(l, r, *size));
         }
         ExpressionOp::LessOrEquals(l, r, sgn) => {
             remap_operands(src, *l, vec, map);
-            let l = vec.len() - 1;
+            let l = OpIdx::from_idx(vec.len() - 1);
             remap_operands(src, *r, vec, map);
-            let r = vec.len() - 1;
+            let r = OpIdx::from_idx(vec.len() - 1);
             vec.push(ExpressionOp::LessOrEquals(l, r, *sgn));
         }
         ExpressionOp::Less(l, r, sgn) => {
             remap_operands(src, *l, vec, map);
-            let l = vec.len() - 1;
+            let l = OpIdx::from_idx(vec.len() - 1);
             remap_operands(src, *r, vec, map);
-            let r = vec.len() - 1;
+            let r = OpIdx::from_idx(vec.len() - 1);
             vec.push(ExpressionOp::Less(l, r, *sgn));
         }
         ExpressionOp::GreaterOrEquals(l, r, sgn) => {
             remap_operands(src, *l, vec, map);
-            let l = vec.len() - 1;
+            let l = OpIdx::from_idx(vec.len() - 1);
             remap_operands(src, *r, vec, map);
-            let r = vec.len() - 1;
+            let r = OpIdx::from_idx(vec.len() - 1);
             vec.push(ExpressionOp::GreaterOrEquals(l, r, *sgn));
         }
         ExpressionOp::Greater(l, r, sgn) => {
             remap_operands(src, *l, vec, map);
-            let l = vec.len() - 1;
+            let l = OpIdx::from_idx(vec.len() - 1);
             remap_operands(src, *r, vec, map);
-            let r = vec.len() - 1;
+            let r = OpIdx::from_idx(vec.len() - 1);
             vec.push(ExpressionOp::Greater(l, r, *sgn));
         }
         ExpressionOp::Equals(l, r, sgn) => {
             remap_operands(src, *l, vec, map);
-            let l = vec.len() - 1;
+            let l = OpIdx::from_idx(vec.len() - 1);
             remap_operands(src, *r, vec, map);
-            let r = vec.len() - 1;
+            let r = OpIdx::from_idx(vec.len() - 1);
             vec.push(ExpressionOp::Equals(l, r, *sgn));
         }
         ExpressionOp::NotEquals(l, r, sgn) => {
             remap_operands(src, *l, vec, map);
-            let l = vec.len() - 1;
+            let l = OpIdx::from_idx(vec.len() - 1);
             remap_operands(src, *r, vec, map);
-            let r = vec.len() - 1;
+            let r = OpIdx::from_idx(vec.len() - 1);
             vec.push(ExpressionOp::NotEquals(l, r, *sgn));
         }
         ExpressionOp::BitShiftRight(l, r, size) => {
             remap_operands(src, *l, vec, map);
-            let l = vec.len() - 1;
+            let l = OpIdx::from_idx(vec.len() - 1);
             remap_operands(src, *r, vec, map);
-            let r = vec.len() - 1;
+            let r = OpIdx::from_idx(vec.len() - 1);
             vec.push(ExpressionOp::BitShiftRight(l, r, *size));
         }
         ExpressionOp::BitShiftLeft(l, r, size) => {
             remap_operands(src, *l, vec, map);
-            let l = vec.len() - 1;
+            let l = OpIdx::from_idx(vec.len() - 1);
             remap_operands(src, *r, vec, map);
-            let r = vec.len() - 1;
+            let r = OpIdx::from_idx(vec.len() - 1);
             vec.push(ExpressionOp::BitShiftLeft(l, r, *size));
         }
         ExpressionOp::And(l, r) => {
             remap_operands(src, *l, vec, map);
-            let l = vec.len() - 1;
+            let l = OpIdx::from_idx(vec.len() - 1);
             remap_operands(src, *r, vec, map);
-            let r = vec.len() - 1;
+            let r = OpIdx::from_idx(vec.len() - 1);
             vec.push(ExpressionOp::And(l, r));
         }
         ExpressionOp::Or(l, r) => {
             remap_operands(src, *l, vec, map);
-            let l = vec.len() - 1;
+            let l = OpIdx::from_idx(vec.len() - 1);
             remap_operands(src, *r, vec, map);
-            let r = vec.len() - 1;
+            let r = OpIdx::from_idx(vec.len() - 1);
             vec.push(ExpressionOp::And(l, r));
         }
         ExpressionOp::Not(l) => {
             remap_operands(src, *l, vec, map);
-            let l = vec.len() - 1;
+            let l = OpIdx::from_idx(vec.len() - 1);
             vec.push(ExpressionOp::Not(l));
         }
         ExpressionOp::Xor(l, r) => {
             remap_operands(src, *l, vec, map);
-            let l = vec.len() - 1;
+            let l = OpIdx::from_idx(vec.len() - 1);
             remap_operands(src, *r, vec, map);
-            let r = vec.len() - 1;
+            let r = OpIdx::from_idx(vec.len() - 1);
             vec.push(ExpressionOp::Xor(l, r));
         }
     }
@@ -561,7 +580,7 @@ impl Expression {
     /// # Returns
     /// Reference to the operation at the specified index
     pub fn get(&self, idx: OpIdx) -> &ExpressionOp {
-        &self.0[idx]
+        &self[idx]
     }
 
     /// Get an iterator over all operations in this expression.
@@ -750,10 +769,10 @@ impl Expression {
         }
 
         let size = size.into();
-        match self.0[expr] {
+        match self[expr] {
             Add(l, r, other_size) => {
                 if other_size == size {
-                    if let Value(v) = &mut self.0[r] {
+                    if let Value(v) = &mut self[r] {
                         match size {
                             InstructionSize::U8 => *v = (*v as u8).wrapping_add(value as u8) as u64,
                             InstructionSize::U16 => {
@@ -764,7 +783,7 @@ impl Expression {
                             }
                             InstructionSize::U64 => *v = (*v).wrapping_add(value),
                         }
-                    } else if let Value(v) = &mut self.0[l] {
+                    } else if let Value(v) = &mut self[l] {
                         match size {
                             InstructionSize::U8 => *v = (*v as u8).wrapping_add(value as u8) as u64,
                             InstructionSize::U16 => {
@@ -783,7 +802,7 @@ impl Expression {
             }
             Sub(l, r, other_size) => {
                 if other_size == size {
-                    if let Value(v) = &mut self.0[r] {
+                    if let Value(v) = &mut self[r] {
                         // adding `value` to `some - v`
                         if *v > value {
                             match size {
@@ -811,9 +830,9 @@ impl Expression {
                                 }
                                 InstructionSize::U64 => *v = (value).wrapping_sub(*v),
                             }
-                            self.0[expr] = Add(l, r, size)
+                            self[expr] = Add(l, r, size)
                         }
-                    } else if let Value(v) = &mut self.0[l] {
+                    } else if let Value(v) = &mut self[l] {
                         // adding `value` to `v - some`
                         match size {
                             InstructionSize::U8 => *v = (*v as u8).wrapping_add(value as u8) as u64,
@@ -832,7 +851,7 @@ impl Expression {
                 }
             }
             Value(v) => {
-                self.0[expr] = Value(match size {
+                self[expr] = Value(match size {
                     InstructionSize::U8 => (v as u8).wrapping_add(value as u8) as u64,
                     InstructionSize::U16 => (v as u16).wrapping_add(value as u16) as u64,
                     InstructionSize::U32 => (v as u32).wrapping_add(value as u32) as u64,
@@ -889,10 +908,10 @@ impl Expression {
             2
         }
         let size = size.into();
-        match self.0[expr] {
+        match self[expr] {
             Add(l, r, other_size) => {
                 if size == other_size {
-                    if let Value(v) = &mut self.0[r] {
+                    if let Value(v) = &mut self[r] {
                         // subtracting `value` from `some + v`
                         if *v > value {
                             match size {
@@ -920,9 +939,9 @@ impl Expression {
                                 }
                                 InstructionSize::U64 => *v = (value).wrapping_sub(*v),
                             }
-                            self.0[expr] = Sub(l, r, size)
+                            self[expr] = Sub(l, r, size)
                         }
-                    } else if let Value(v) = &mut self.0[l] {
+                    } else if let Value(v) = &mut self[l] {
                         // subtracting `value` from `v + some`
                         if *v > value {
                             match size {
@@ -950,7 +969,7 @@ impl Expression {
                                 }
                                 InstructionSize::U64 => *v = (value).wrapping_sub(*v),
                             }
-                            self.0[expr] = Sub(r, l, size) // turn this into `some - v`
+                            self[expr] = Sub(r, l, size) // turn this into `some - v`
                         }
                     }
                     0
@@ -960,7 +979,7 @@ impl Expression {
             }
             Sub(l, r, other_size) => {
                 if size == other_size {
-                    if let Value(v) = &mut self.0[r] {
+                    if let Value(v) = &mut self[r] {
                         // subtracting `value` from `some - v`
                         match size {
                             InstructionSize::U8 => *v = (*v as u8).wrapping_add(value as u8) as u64,
@@ -972,7 +991,7 @@ impl Expression {
                             }
                             InstructionSize::U64 => *v = (*v).wrapping_add(value),
                         }
-                    } else if let Value(v) = &mut self.0[l] {
+                    } else if let Value(v) = &mut self[l] {
                         // subtracting `value` from `v - some`
                         // no side check here because -v is covered by wrapping_sub
                         match size {
@@ -992,7 +1011,7 @@ impl Expression {
                 }
             }
             Value(v) => {
-                self.0[expr] = Value(v.wrapping_sub(value));
+                self[expr] = Value(v.wrapping_sub(value));
                 0
             }
             _ => cant_optimize(self, value, expr, is_invert, size),
@@ -1040,12 +1059,12 @@ impl Expression {
             e.0.push(ExpressionOp::Multiply(expr, pos, size));
             2
         }
-        match self.0[expr] {
+        match self[expr] {
             Multiply(l, r, other_size) => {
                 if other_size == size {
-                    if let Value(v) = &mut self.0[r] {
+                    if let Value(v) = &mut self[r] {
                         *v = v.wrapping_mul(value)
-                    } else if let Value(v) = &mut self.0[l] {
+                    } else if let Value(v) = &mut self[l] {
                         *v = v.wrapping_mul(value)
                     }
                     0
@@ -1054,7 +1073,7 @@ impl Expression {
                 }
             }
             Value(v) => {
-                self.0[expr] = Value(v * value);
+                self[expr] = Value(v * value);
                 0
             }
             _ => cant_optimize(self, value, expr, size),
@@ -1084,8 +1103,8 @@ impl Expression {
     /// This corresponds to CPU instructions like `POPCNT` on x86.
     pub fn count_ones(&mut self) {
         let val = self.get_entry_point();
-        if let ExpressionOp::Value(v) = &self.0[val] {
-            self.0[val] = ExpressionOp::Value(v.count_ones() as u64);
+        if let ExpressionOp::Value(v) = &self[val] {
+            self[val] = ExpressionOp::Value(v.count_ones() as u64);
         } else {
             self.0.push(ExpressionOp::CountOnes(val));
         }
@@ -1115,8 +1134,11 @@ impl Expression {
     pub fn bit_shift_right<S: Into<InstructionSize>>(&mut self, value: u64, size: S) {
         let val = self.get_entry_point();
         self.0.push(ExpressionOp::Value(value));
-        self.0
-            .push(ExpressionOp::BitShiftRight(val, val + 1, size.into()));
+        self.0.push(ExpressionOp::BitShiftRight(
+            val,
+            OpIdx::from_idx(val.as_idx() + 1),
+            size.into(),
+        ));
     }
 
     /// Perform a left bit shift by a constant value.
@@ -1130,8 +1152,11 @@ impl Expression {
     pub fn bit_shift_left<S: Into<InstructionSize>>(&mut self, value: u64, size: S) {
         let val = self.get_entry_point();
         self.0.push(ExpressionOp::Value(value));
-        self.0
-            .push(ExpressionOp::BitShiftLeft(val, val + 1, size.into()));
+        self.0.push(ExpressionOp::BitShiftLeft(
+            val,
+            OpIdx::from_idx(val.as_idx() + 1),
+            size.into(),
+        ));
     }
 
     /// Perform bitwise AND with another expression.
@@ -1145,8 +1170,8 @@ impl Expression {
         if self != other {
             let left = self.get_entry_point();
             if let Some(ExpressionOp::Value(v)) = other.root_op() {
-                if let ExpressionOp::Value(me) = &self.0[left] {
-                    self.0[left] = ExpressionOp::Value(*v & *me);
+                if let ExpressionOp::Value(me) = &self[left] {
+                    self[left] = ExpressionOp::Value(*v & *me);
                     return;
                 } else {
                     self.0.push(ExpressionOp::Value(*v));
@@ -1169,8 +1194,8 @@ impl Expression {
     pub fn or(&mut self, other: &Expression) {
         let left = self.get_entry_point();
         if let Some(ExpressionOp::Value(v)) = other.root_op() {
-            if let ExpressionOp::Value(me) = &self.0[left] {
-                self.0[left] = ExpressionOp::Value(*v | *me);
+            if let ExpressionOp::Value(me) = &self[left] {
+                self[left] = ExpressionOp::Value(*v | *me);
                 return;
             } else {
                 self.0.push(ExpressionOp::Value(*v));
@@ -1290,12 +1315,16 @@ impl Expression {
     ) {
         self.sub_value(value, size);
         let left = self.get_entry_point();
-        match self.0[left] {
-            ExpressionOp::Sub(l, r, _size) => self.0[left] = ExpressionOp::Equals(l, r, sgn),
-            ExpressionOp::Value(v) => self.0[left] = ExpressionOp::Value((v == 0) as u64),
+        match self[left] {
+            ExpressionOp::Sub(l, r, _size) => self[left] = ExpressionOp::Equals(l, r, sgn),
+            ExpressionOp::Value(v) => self[left] = ExpressionOp::Value((v == 0) as u64),
             _ => {
                 self.0.push(ExpressionOp::Value(value));
-                self.0.push(ExpressionOp::Equals(left, left + 1, sgn))
+                self.0.push(ExpressionOp::Equals(
+                    left,
+                    OpIdx::from_idx(left.as_idx() + 1),
+                    sgn,
+                ))
             }
         }
     }
@@ -1318,12 +1347,16 @@ impl Expression {
     ) {
         self.sub_value(value, size);
         let left = self.get_entry_point();
-        match self.0[left] {
-            ExpressionOp::Sub(l, r, _size) => self.0[left] = ExpressionOp::NotEquals(l, r, sgn),
-            ExpressionOp::Value(v) => self.0[left] = ExpressionOp::Value((v != 0) as u64),
+        match self[left] {
+            ExpressionOp::Sub(l, r, _size) => self[left] = ExpressionOp::NotEquals(l, r, sgn),
+            ExpressionOp::Value(v) => self[left] = ExpressionOp::Value((v != 0) as u64),
             _ => {
                 self.0.push(ExpressionOp::Value(value));
-                self.0.push(ExpressionOp::NotEquals(left, left + 1, sgn))
+                self.0.push(ExpressionOp::NotEquals(
+                    left,
+                    OpIdx::from_idx(left.as_idx() + 1),
+                    sgn,
+                ))
             }
         }
     }
@@ -1371,14 +1404,16 @@ impl Expression {
     ) {
         self.sub_value(value, size);
         let left = self.get_entry_point();
-        match self.0[left] {
-            ExpressionOp::Sub(l, r, _size) => {
-                self.0[left] = ExpressionOp::GreaterOrEquals(l, r, sgn)
-            }
-            ExpressionOp::Value(v) => self.0[left] = ExpressionOp::Value(((v as i64) < 0) as u64),
+        match self[left] {
+            ExpressionOp::Sub(l, r, _size) => self[left] = ExpressionOp::GreaterOrEquals(l, r, sgn),
+            ExpressionOp::Value(v) => self[left] = ExpressionOp::Value(((v as i64) < 0) as u64),
             _ => {
                 self.0.push(ExpressionOp::Value(value));
-                self.0.push(ExpressionOp::Less(left, left + 1, sgn))
+                self.0.push(ExpressionOp::Less(
+                    left,
+                    OpIdx::from_idx(left.as_idx() + 1),
+                    sgn,
+                ))
             }
         }
     }
@@ -1396,12 +1431,16 @@ impl Expression {
     pub fn check_greater_value(&mut self, value: u64, size: InstructionSize, sgn: SignedOrUnsiged) {
         self.sub_value(value, size);
         let left = self.get_entry_point();
-        match self.0[left] {
-            ExpressionOp::Sub(l, r, _size) => self.0[left] = ExpressionOp::LessOrEquals(l, r, sgn),
-            ExpressionOp::Value(v) => self.0[left] = ExpressionOp::Value((v > 0) as u64),
+        match self[left] {
+            ExpressionOp::Sub(l, r, _size) => self[left] = ExpressionOp::LessOrEquals(l, r, sgn),
+            ExpressionOp::Value(v) => self[left] = ExpressionOp::Value((v > 0) as u64),
             _ => {
                 self.0.push(ExpressionOp::Value(value));
-                self.0.push(ExpressionOp::Greater(left, left + 1, sgn))
+                self.0.push(ExpressionOp::Greater(
+                    left,
+                    OpIdx::from_idx(left.as_idx() + 1),
+                    sgn,
+                ))
             }
         }
     }
@@ -1424,12 +1463,16 @@ impl Expression {
     ) {
         self.sub_value(value, size);
         let left = self.get_entry_point();
-        match self.0[left] {
-            ExpressionOp::Sub(l, r, _size) => self.0[left] = ExpressionOp::Greater(l, r, sgn),
-            ExpressionOp::Value(v) => self.0[left] = ExpressionOp::Value(((v as i64) <= 0) as u64),
+        match self[left] {
+            ExpressionOp::Sub(l, r, _size) => self[left] = ExpressionOp::Greater(l, r, sgn),
+            ExpressionOp::Value(v) => self[left] = ExpressionOp::Value(((v as i64) <= 0) as u64),
             _ => {
                 self.0.push(ExpressionOp::Value(value));
-                self.0.push(ExpressionOp::LessOrEquals(left, left + 1, sgn))
+                self.0.push(ExpressionOp::LessOrEquals(
+                    left,
+                    OpIdx::from_idx(left.as_idx() + 1),
+                    sgn,
+                ))
             }
         }
     }
@@ -1452,13 +1495,16 @@ impl Expression {
     ) {
         self.sub_value(value, size);
         let left = self.get_entry_point();
-        match self.0[left] {
-            ExpressionOp::Sub(l, r, _size) => self.0[left] = ExpressionOp::Less(l, r, sgn),
-            ExpressionOp::Value(v) => self.0[left] = ExpressionOp::Value(((v as i64) >= 0) as u64),
+        match self[left] {
+            ExpressionOp::Sub(l, r, _size) => self[left] = ExpressionOp::Less(l, r, sgn),
+            ExpressionOp::Value(v) => self[left] = ExpressionOp::Value(((v as i64) >= 0) as u64),
             _ => {
                 self.0.push(ExpressionOp::Value(value));
-                self.0
-                    .push(ExpressionOp::GreaterOrEquals(left, left + 1, sgn))
+                self.0.push(ExpressionOp::GreaterOrEquals(
+                    left,
+                    OpIdx::from_idx(left.as_idx() + 1),
+                    sgn,
+                ))
             }
         }
     }
@@ -1473,24 +1519,24 @@ impl Expression {
     /// - `!(A < B)` becomes `A >= B`
     pub fn not(&mut self) {
         let pos = self.get_entry_point();
-        match self.0[pos] {
+        match self[pos] {
             ExpressionOp::Equals(l, r, sgn) => {
-                self.0[pos] = ExpressionOp::NotEquals(l, r, sgn);
+                self[pos] = ExpressionOp::NotEquals(l, r, sgn);
             }
             ExpressionOp::Greater(l, r, sgn) => {
-                self.0[pos] = ExpressionOp::LessOrEquals(l, r, sgn);
+                self[pos] = ExpressionOp::LessOrEquals(l, r, sgn);
             }
             ExpressionOp::GreaterOrEquals(l, r, sgn) => {
-                self.0[pos] = ExpressionOp::Less(l, r, sgn);
+                self[pos] = ExpressionOp::Less(l, r, sgn);
             }
             ExpressionOp::Less(l, r, sgn) => {
-                self.0[pos] = ExpressionOp::GreaterOrEquals(l, r, sgn);
+                self[pos] = ExpressionOp::GreaterOrEquals(l, r, sgn);
             }
             ExpressionOp::LessOrEquals(l, r, sgn) => {
-                self.0[pos] = ExpressionOp::Greater(l, r, sgn);
+                self[pos] = ExpressionOp::Greater(l, r, sgn);
             }
             ExpressionOp::NotEquals(l, r, sgn) => {
-                self.0[pos] = ExpressionOp::Equals(l, r, sgn);
+                self[pos] = ExpressionOp::Equals(l, r, sgn);
             }
 
             _ => self.0.push(ExpressionOp::Not(pos)),
@@ -1508,7 +1554,7 @@ impl Expression {
         if is_draw_paren {
             f.write_str("(")?;
         }
-        match &self.0[idx] {
+        match &self[idx] {
             ExpressionOp::Variable(variable) => variable.display_fmt(lang, f),
             ExpressionOp::DestinationRegister(register) => {
                 if let Some(name) = lang.and_then(|s| s.sleigh.name_of_varnode(*register)) {
@@ -1639,7 +1685,7 @@ impl Expression {
     }
 
     fn get_precesense(&self, pos: OpIdx) -> u8 {
-        match &self.0[pos] {
+        match &self[pos] {
             ExpressionOp::DestinationRegister(_)
             | ExpressionOp::Value(_)
             | ExpressionOp::Overflow(_, _)
@@ -1671,7 +1717,7 @@ impl Expression {
         if p > my_p {
             true
         } else {
-            match &self.0[start] {
+            match &self[start] {
                 ExpressionOp::DestinationRegister(_)
                 | ExpressionOp::Value(_)
                 | ExpressionOp::Variable(_) => false,
@@ -1709,9 +1755,9 @@ impl Expression {
         // helper function to calculate new pointer position
         // if the pointer is between `[0; ignore_under]` - it's unchanged, because the expression hasn't been touched there.
         // otherwise the pointer is past the replaced variable and needs to be changed.
-        let s = |p: &usize| {
-            if *p >= ignore_under {
-                p - ignore_under + new_pos
+        let s = |p: &OpIdx| {
+            if p.as_idx() >= ignore_under {
+                OpIdx::from_idx(p.as_idx() - ignore_under + new_pos)
             } else {
                 *p
             }
@@ -1830,25 +1876,25 @@ impl Expression {
     /// # Panics
     /// Panics if the operation at `var_index` is not a `Variable` variant.
     pub fn replace_variable_with_expression(&mut self, var_index: OpIdx, expr: &Expression) -> i32 {
-        assert!(matches!(self.0[var_index], ExpressionOp::Variable(_)));
+        assert!(matches!(self[var_index], ExpressionOp::Variable(_)));
         if expr == self {
             return 0;
         }
         // split the instruction vector
-        let shift = var_index + (expr.0.len() - 1);
+        let shift = var_index.as_idx() + (expr.0.len() - 1);
         let remainder: SmallVec<[ExpressionOp; SMALLVEC_SIZE]> =
-            self.0[var_index..].iter().cloned().collect();
-        self.0.truncate(var_index);
+            self.0[var_index.as_idx()..].iter().cloned().collect();
+        self.0.truncate(var_index.as_idx());
         // copy new instructions instead of the variable
         self.copy_other_to_end(&expr.0);
         // fix old instruction pointers
         if true {
             // is flattening expressions or not?
-            let saved = self.apply(shift as i32, var_index, &remainder[1..]);
+            let saved = self.apply(shift as i32, var_index.as_idx(), &remainder[1..]);
             expr.0.len() as i32 - 1 + saved
         } else {
             // If we just do self.copy_other we will crate correct expression, but it'll be expanded - with lots of + and - ops that can be simplified.
-            self.copy_other(shift, var_index, &remainder[1..]);
+            self.copy_other(shift, var_index.as_idx(), &remainder[1..]);
             (expr.0.len() - 1) as i32
         }
     }
@@ -1884,19 +1930,19 @@ impl Expression {
     {
         // let mut extended_by = 0;
 
-        let mut pos = 0;
-        while pos < self.0.len() {
-            if let ExpressionOp::Variable(v) = &self.0[pos] {
+        let mut pos = OpIdx::from_idx(0);
+        while pos.as_idx() < self.0.len() {
+            if let ExpressionOp::Variable(v) = &self[pos] {
                 if let Some(expr) = replace(v) {
                     let r = self.replace_variable_with_expression(pos, &expr);
                     if r > 0 {
                         // it is possible we remove more instructions than add in case of nop-algebra.
                         // in that case position of current variable stays the same.
-                        pos = (pos as i32 + r) as usize;
+                        pos = OpIdx::from_idx(pos.as_idx() + r as usize);
                     }
                 }
             }
-            pos += 1;
+            pos = OpIdx::from_idx(pos.as_idx() + 1);
         }
     }
 
@@ -1947,8 +1993,8 @@ impl Expression {
                 | ExpressionOp::Interrupt(l)
                 | ExpressionOp::Not(l)
                 | ExpressionOp::CountOnes(l) => {
-                    if *l >= from {
-                        *l -= 1
+                    if l.as_idx() >= from {
+                        *l = OpIdx::from_idx(l.as_idx() - 1);
                     }
                 }
                 ExpressionOp::Assign(l, r)
@@ -1967,11 +2013,11 @@ impl Expression {
                 | ExpressionOp::Or(l, r)
                 | ExpressionOp::Xor(l, r)
                 | ExpressionOp::NotEquals(l, r, _) => {
-                    if *l >= from {
-                        *l -= 1;
+                    if l.as_idx() >= from {
+                        *l = OpIdx::from_idx(l.as_idx() - 1);
                     }
-                    if *r >= from {
-                        *r -= 1
+                    if r.as_idx() >= from {
+                        *r = OpIdx::from_idx(r.as_idx() - 1);
                     }
                 }
                 ExpressionOp::Variable(_)
@@ -1981,7 +2027,7 @@ impl Expression {
         }
     }
 
-    fn replace_offsets(&mut self, from: usize, original: usize, new: usize) {
+    fn replace_offsets(&mut self, from: usize, original: OpIdx, new: OpIdx) {
         for op in &mut self.0[from..] {
             match op {
                 ExpressionOp::Dereference(l)
@@ -2023,39 +2069,39 @@ impl Expression {
         }
     }
 
-    fn remove_nop_algebra(&mut self, mut idx: OpIdx) -> i32 {
+    fn remove_nop_algebra(&mut self, mut idx: usize) -> i32 {
         let mut left_over = None;
         match &self.0[idx] {
             &ExpressionOp::Add(l, r, _) | &ExpressionOp::Sub(l, r, _) => {
-                if ExpressionOp::Value(0) == self.0[l] {
-                    self.0.remove(l);
+                if ExpressionOp::Value(0) == self[l] {
+                    self.0.remove(l.as_idx());
                     left_over = Some(r);
-                    self.decrement_offsets(l);
-                    if l < idx {
+                    self.decrement_offsets(l.as_idx());
+                    if l.as_idx() < idx {
                         idx -= 1;
                     }
-                } else if ExpressionOp::Value(0) == self.0[r] {
-                    self.0.remove(r);
+                } else if ExpressionOp::Value(0) == self[r] {
+                    self.0.remove(r.as_idx());
                     left_over = Some(l);
-                    self.decrement_offsets(r);
-                    if r < idx {
+                    self.decrement_offsets(r.as_idx());
+                    if r.as_idx() < idx {
                         idx -= 1;
                     }
                 }
             }
             &ExpressionOp::Multiply(l, r, _) => {
-                if ExpressionOp::Value(1) == self.0[l] {
-                    self.0.remove(l);
+                if ExpressionOp::Value(1) == self[l] {
+                    self.0.remove(l.as_idx());
                     left_over = Some(r);
-                    self.decrement_offsets(l);
-                    if l < idx {
+                    self.decrement_offsets(l.as_idx());
+                    if l.as_idx() < idx {
                         idx -= 1;
                     }
-                } else if ExpressionOp::Value(1) == self.0[r] {
-                    self.0.remove(r);
+                } else if ExpressionOp::Value(1) == self[r] {
+                    self.0.remove(r.as_idx());
                     left_over = Some(l);
-                    self.decrement_offsets(r);
-                    if r < idx {
+                    self.decrement_offsets(r.as_idx());
+                    if r.as_idx() < idx {
                         idx -= 1;
                     }
                 }
@@ -2066,7 +2112,7 @@ impl Expression {
         if let Some(left_over) = left_over {
             self.0.remove(idx);
             self.decrement_offsets(idx);
-            self.replace_offsets(idx, idx - 1, left_over);
+            self.replace_offsets(idx, OpIdx::from_idx(idx - 1), left_over);
             -2
         } else {
             0
@@ -2105,6 +2151,7 @@ impl Expression {
                 patched_r -= 1;
             }
             self.decrement_offsets(patched_l);
+            let patched_r = OpIdx::from_idx(patched_r);
             let mut r = match patch_kind {
                 // values will be attempted to be added and if they can't be - new instructions will be pushed on the stack
                 // the count of those instructions will be returned, so we add them to new_pos
@@ -2113,7 +2160,7 @@ impl Expression {
                 PatchKind::Mul => self.multiply_value_at(patched_r, left, size),
             } as i32
                 - 2; // overall we removed one instruction from the list, and saved space by not adding a value, therefore, remove 2 from new_pos
-            r += self.remove_nop_algebra(patched_r);
+            r += self.remove_nop_algebra(patched_r.as_idx());
             r
         } else if let ExpressionOp::Value(right) = self.0[patched_r] {
             // assert_eq!(patched_r, self.entry());
@@ -2122,15 +2169,18 @@ impl Expression {
                 patched_l -= 1;
             }
             self.decrement_offsets(patched_r);
+            let patched_l = OpIdx::from_idx(patched_l);
             let mut r = match patch_kind {
                 PatchKind::Add => self.add_value_at(patched_l, right, size),
                 PatchKind::Sub => self.sub_value_at(patched_l, right, false, size),
                 PatchKind::Mul => self.multiply_value_at(patched_l, right, size),
             } as i32
                 - 2;
-            r += self.remove_nop_algebra(patched_l);
+            r += self.remove_nop_algebra(patched_l.as_idx());
             r
         } else {
+            let patched_l = OpIdx::from_idx(patched_l);
+            let patched_r = OpIdx::from_idx(patched_r);
             self.0.push(match patch_kind {
                 PatchKind::Add => ExpressionOp::Add(patched_l, patched_r, size),
                 PatchKind::Sub => ExpressionOp::Sub(patched_l, patched_r, size),
@@ -2142,9 +2192,9 @@ impl Expression {
 
     fn apply(&mut self, mut new_pos: i32, ignore_under: usize, other: &[ExpressionOp]) -> i32 {
         use ExpressionOp::*;
-        fn s(p: &usize, ignore_under: usize, new_pos: i32) -> usize {
-            if *p >= ignore_under {
-                ((*p - ignore_under) as i32 + new_pos) as usize
+        fn s(p: &OpIdx, ignore_under: usize, new_pos: i32) -> OpIdx {
+            if p.as_idx() >= ignore_under {
+                OpIdx::from_idx(((p.as_idx() - ignore_under) as i32 + new_pos) as usize)
             } else {
                 *p
             }
@@ -2165,17 +2215,38 @@ impl Expression {
                     s(r, ignore_under, new_pos),
                 )),
                 Add(l, r, size) => {
-                    let saved = self.patch(*l, *r, new_pos, ignore_under, PatchKind::Add, *size);
+                    let saved = self.patch(
+                        l.as_idx(),
+                        r.as_idx(),
+                        new_pos,
+                        ignore_under,
+                        PatchKind::Add,
+                        *size,
+                    );
                     total_saved += saved;
                     new_pos = new_pos as i32 + saved;
                 }
                 Sub(l, r, size) => {
-                    let saved = self.patch(*l, *r, new_pos, ignore_under, PatchKind::Sub, *size);
+                    let saved = self.patch(
+                        l.as_idx(),
+                        r.as_idx(),
+                        new_pos,
+                        ignore_under,
+                        PatchKind::Sub,
+                        *size,
+                    );
                     total_saved += saved;
                     new_pos = new_pos as i32 + saved;
                 }
                 Multiply(l, r, size) => {
-                    let saved = self.patch(*l, *r, new_pos, ignore_under, PatchKind::Mul, *size);
+                    let saved = self.patch(
+                        l.as_idx(),
+                        r.as_idx(),
+                        new_pos,
+                        ignore_under,
+                        PatchKind::Mul,
+                        *size,
+                    );
                     total_saved += saved;
                     new_pos = new_pos as i32 + saved;
                 }
@@ -2250,7 +2321,7 @@ impl Expression {
     ///
     /// Panics if the expression is empty
     pub fn get_entry_point(&self) -> OpIdx {
-        return self.0.len() - 1;
+        return OpIdx::from_idx(self.0.len() - 1);
     }
 
     /// Create a wrapper for pretty-printing this expression with SLEIGH language context.
@@ -2397,6 +2468,8 @@ mod test {
     use pcode::VarNode;
     use smallvec::{smallvec, SmallVec};
 
+    use crate::ir::expression::OpIdx;
+
     use super::{Expression, ExpressionOp, InstructionSize::U32, VariableSymbol, SMALLVEC_SIZE};
 
     #[inline]
@@ -2448,9 +2521,9 @@ mod test {
         let result: SmallVec<[ExpressionOp; SMALLVEC_SIZE]> = smallvec![
             var_reg(mk_eax()),
             ExpressionOp::Value(1),
-            ExpressionOp::Add(0, 1, U32),
+            ExpressionOp::Add(OpIdx::from_idx(0), OpIdx::from_idx(1), U32),
             ExpressionOp::Value(4),
-            ExpressionOp::Multiply(2, 3, U32),
+            ExpressionOp::Multiply(OpIdx::from_idx(2), OpIdx::from_idx(3), U32),
         ];
         assert_eq!(e.0, result);
     }
@@ -2466,7 +2539,7 @@ mod test {
         sub.add(&Expression::from(VariableSymbol::Varnode(mk_esp())), U32);
         sub.multiply_value(2, U32); // sub = (1+?ESP) * 2
 
-        e.replace_variable_with_expression(0, &sub);
+        e.replace_variable_with_expression(OpIdx::from_idx(0), &sub);
 
         // This block is correct if we are NOT using expression flattening
         // assert_eq!(e.0, vec![
@@ -2487,13 +2560,13 @@ mod test {
             // (1 + (1 + ?ESP) * 2 ) * 4
             VarOp(VariableSymbol::Varnode(mk_esp())),
             Value(1),
-            Add(0, 1, U32),
+            Add(OpIdx::from_idx(0), OpIdx::from_idx(1), U32),
             Value(2),
-            Multiply(2, 3, U32),
+            Multiply(OpIdx::from_idx(2), OpIdx::from_idx(3), U32),
             Value(1),
-            Add(4, 5, U32),
+            Add(OpIdx::from_idx(4), OpIdx::from_idx(5), U32),
             Value(4),
-            Multiply(6, 7, U32)
+            Multiply(OpIdx::from_idx(6), OpIdx::from_idx(7), U32)
         ];
         assert_eq!(e.0, result);
     }
@@ -2511,16 +2584,16 @@ mod test {
         second.dereference();
         // second = [?ESP - 12]
 
-        second.replace_variable_with_expression(0, &first);
+        second.replace_variable_with_expression(OpIdx::from_idx(0), &first);
         // second = [[?ESP - 12] + 180]
         let result: SmallVec<[ExpressionOp; SMALLVEC_SIZE]> = smallvec![
             VarOp(VariableSymbol::Varnode(mk_esp())),
             Value(180),
-            Add(0, 1, U32),
-            Dereference(2),
+            Add(OpIdx::from_idx(0), OpIdx::from_idx(1), U32),
+            Dereference(OpIdx::from_idx(2)),
             Value(12),
-            Sub(3, 4, U32),
-            Dereference(5)
+            Sub(OpIdx::from_idx(3), OpIdx::from_idx(4), U32),
+            Dereference(OpIdx::from_idx(5))
         ];
         assert_eq!(second.0, result);
     }
@@ -2531,9 +2604,9 @@ mod test {
         let mut e = Expression::new();
         e.0 = smallvec![
             Value(6721424),
-            Dereference(0),
+            Dereference(OpIdx::from_idx(0)),
             ExpressionOp::Variable(VariableSymbol::Varnode(mk_eax())),
-            Add(1, 2, U32)
+            Add(OpIdx::from_idx(1), OpIdx::from_idx(2), U32)
         ];
         // e = [668f90] := ?EAX
 
@@ -2541,18 +2614,18 @@ mod test {
         eax.0 = smallvec![
             VarOp(VariableSymbol::Varnode(mk_ebp())),
             Value(100),
-            Add(0, 1, U32),
-            Dereference(2)
+            Add(OpIdx::from_idx(0), OpIdx::from_idx(1), U32),
+            Dereference(OpIdx::from_idx(2))
         ]; // eax = [?EBP + 100]
-        e.replace_variable_with_expression(2, &eax);
+        e.replace_variable_with_expression(OpIdx::from_idx(2), &eax);
         let result: SmallVec<[ExpressionOp; SMALLVEC_SIZE]> = smallvec![
             Value(6721424),
-            Dereference(0),
+            Dereference(OpIdx::from_idx(0)),
             VarOp(VariableSymbol::Varnode(mk_ebp())),
             Value(100),
-            Add(2, 3, U32),
-            Dereference(4),
-            Add(1, 5, U32)
+            Add(OpIdx::from_idx(2), OpIdx::from_idx(3), U32),
+            Dereference(OpIdx::from_idx(4)),
+            Add(OpIdx::from_idx(1), OpIdx::from_idx(5), U32)
         ];
         assert_eq!(e.0, result)
     }
@@ -2564,8 +2637,8 @@ mod test {
         ptr.0 = smallvec![
             VarOp(VariableSymbol::Varnode(mk_eax())),
             Value(20),
-            Add(0, 1, U32),
-            Dereference(2)
+            Add(OpIdx::from_idx(0), OpIdx::from_idx(1), U32),
+            Dereference(OpIdx::from_idx(2))
         ];
 
         // e = [?EAX + 20] := ?data@[?EAX + 20] + 1
@@ -2573,12 +2646,12 @@ mod test {
         e.0 = smallvec![
             VarOp(VariableSymbol::Varnode(mk_eax())),
             Value(20),
-            Add(0, 1, U32),
-            Dereference(2),
+            Add(OpIdx::from_idx(0), OpIdx::from_idx(1), U32),
+            Dereference(OpIdx::from_idx(2)),
             VarOp(VariableSymbol::Ram(Box::new(ptr), 4)),
             Value(1),
-            Add(4, 5, U32),
-            Add(3, 6, U32)
+            Add(OpIdx::from_idx(4), OpIdx::from_idx(5), U32),
+            Add(OpIdx::from_idx(3), OpIdx::from_idx(6), U32)
         ]; // e = [?EAX + 20] := ?data@[?EAX + 20] + 1
 
         let val_expr = crate::ir::basic_block::DestinationKind::Concrete(4917232_u64.into());
@@ -2599,7 +2672,7 @@ mod test {
             }
             VariableSymbol::Ram(d, size) => {
                 let mut d = d.clone();
-                d.replace_variable_with_expression(0, &eax);
+                d.replace_variable_with_expression(OpIdx::from_idx(0), &eax);
                 Some(std::borrow::Cow::Owned(Expression::from(
                     VariableSymbol::Ram(d, *size),
                 )))
@@ -2611,18 +2684,18 @@ mod test {
         new_ptr.0 = smallvec![
             call_result.clone(),
             Value(20),
-            Add(0, 1, U32),
-            Dereference(2)
+            Add(OpIdx::from_idx(0), OpIdx::from_idx(1), U32),
+            Dereference(OpIdx::from_idx(2))
         ];
         let result: SmallVec<[ExpressionOp; SMALLVEC_SIZE]> = smallvec![
             call_result.clone(),
             Value(20),
-            Add(0, 1, U32),
-            Dereference(2),
+            Add(OpIdx::from_idx(0), OpIdx::from_idx(1), U32),
+            Dereference(OpIdx::from_idx(2)),
             VarOp(VariableSymbol::Ram(Box::new(Expression::from(new_ptr)), 4)),
             Value(1),
-            Add(4, 5, U32),
-            Add(3, 6, U32)
+            Add(OpIdx::from_idx(4), OpIdx::from_idx(5), U32),
+            Add(OpIdx::from_idx(3), OpIdx::from_idx(6), U32)
         ];
         assert_eq!(e.0, result);
     }
@@ -2639,13 +2712,13 @@ mod test {
         second.dereference();
         // second = [?ESP - 12]
 
-        second.replace_variable_with_expression(0, &first);
+        second.replace_variable_with_expression(OpIdx::from_idx(0), &first);
         // second = [?ESP +180 - 12]
         let result: SmallVec<[ExpressionOp; SMALLVEC_SIZE]> = smallvec![
             VarOp(VariableSymbol::Varnode(mk_esp())),
             Value(168),
-            Add(0, 1, U32),
-            Dereference(2)
+            Add(OpIdx::from_idx(0), OpIdx::from_idx(1), U32),
+            Dereference(OpIdx::from_idx(2))
         ];
         assert_eq!(second.0, result);
     }
@@ -2653,59 +2726,80 @@ mod test {
     #[test]
     fn test_sub_at_end() {
         use ExpressionOp::{Add, Dereference, Sub, Value};
-        let mut e = Expression::from(smallvec![var_reg(mk_eax()), Value(10), Sub(0, 1, U32)]);
-        e.sub_value_at(2, 9, false, U32);
-        let result: SmallVec<[ExpressionOp; SMALLVEC_SIZE]> =
-            smallvec![var_reg(mk_eax()), Value(19), Sub(0, 1, U32)];
+        let mut e = Expression::from(smallvec![
+            var_reg(mk_eax()),
+            Value(10),
+            Sub(OpIdx::from_idx(0), OpIdx::from_idx(1), U32)
+        ]);
+        e.sub_value_at(OpIdx::from_idx(2), 9, false, U32);
+        let result: SmallVec<[ExpressionOp; SMALLVEC_SIZE]> = smallvec![
+            var_reg(mk_eax()),
+            Value(19),
+            Sub(OpIdx::from_idx(0), OpIdx::from_idx(1), U32)
+        ];
         assert_eq!(e.0, result)
     }
 
     #[test]
     fn test_sub_at_end_inverted() {
         use ExpressionOp::{Add, Dereference, Sub, Value};
-        let mut e = Expression::from(smallvec![var_reg(mk_eax()), Value(10), Sub(1, 0, U32)]);
-        e.sub_value_at(2, 9, false, U32);
-        let result: SmallVec<[ExpressionOp; SMALLVEC_SIZE]> =
-            smallvec![var_reg(mk_eax()), Value(1), Sub(1, 0, U32)];
-        assert_eq!(e.0, result);
-
-        let mut e = Expression::from(smallvec![var_reg(mk_eax()), Value(10), Sub(1, 0, U32)]);
-        e.sub_value_at(2, 9, true, U32); // Doesn't matter because on-stack Sub() operation gets openned anyway.
-        let result: SmallVec<[ExpressionOp; SMALLVEC_SIZE]> =
-            smallvec![var_reg(mk_eax()), Value(1), Sub(1, 0, U32)];
-        assert_eq!(e.0, result);
-
         let mut e = Expression::from(smallvec![
             var_reg(mk_eax()),
             Value(10),
-            Sub(1, 0, U32),
-            Dereference(2)
+            Sub(OpIdx::from_idx(1), OpIdx::from_idx(0), U32)
         ]);
-        e.sub_value_at(3, 9, false, U32);
+        e.sub_value_at(OpIdx::from_idx(2), 9, false, U32);
         let result: SmallVec<[ExpressionOp; SMALLVEC_SIZE]> = smallvec![
             var_reg(mk_eax()),
-            Value(10),
-            Sub(1, 0, U32),
-            Dereference(2),
-            Value(9),
-            Sub(3, 4, U32)
+            Value(1),
+            Sub(OpIdx::from_idx(1), OpIdx::from_idx(0), U32)
         ];
         assert_eq!(e.0, result);
 
         let mut e = Expression::from(smallvec![
             var_reg(mk_eax()),
             Value(10),
-            Sub(1, 0, U32),
-            Dereference(2)
+            Sub(OpIdx::from_idx(1), OpIdx::from_idx(0), U32)
         ]);
-        e.sub_value_at(3, 9, true, U32);
+        e.sub_value_at(OpIdx::from_idx(2), 9, true, U32); // Doesn't matter because on-stack Sub() operation gets openned anyway.
+        let result: SmallVec<[ExpressionOp; SMALLVEC_SIZE]> = smallvec![
+            var_reg(mk_eax()),
+            Value(1),
+            Sub(OpIdx::from_idx(1), OpIdx::from_idx(0), U32)
+        ];
+        assert_eq!(e.0, result);
+
+        let mut e = Expression::from(smallvec![
+            var_reg(mk_eax()),
+            Value(10),
+            Sub(OpIdx::from_idx(1), OpIdx::from_idx(0), U32),
+            Dereference(OpIdx::from_idx(2))
+        ]);
+        e.sub_value_at(OpIdx::from_idx(3), 9, false, U32);
         let result: SmallVec<[ExpressionOp; SMALLVEC_SIZE]> = smallvec![
             var_reg(mk_eax()),
             Value(10),
-            Sub(1, 0, U32),
-            Dereference(2),
+            Sub(OpIdx::from_idx(1), OpIdx::from_idx(0), U32),
+            Dereference(OpIdx::from_idx(2)),
             Value(9),
-            Sub(4, 3, U32)
+            Sub(OpIdx::from_idx(3), OpIdx::from_idx(4), U32)
+        ];
+        assert_eq!(e.0, result);
+
+        let mut e = Expression::from(smallvec![
+            var_reg(mk_eax()),
+            Value(10),
+            Sub(OpIdx::from_idx(1), OpIdx::from_idx(0), U32),
+            Dereference(OpIdx::from_idx(2))
+        ]);
+        e.sub_value_at(OpIdx::from_idx(3), 9, true, U32);
+        let result: SmallVec<[ExpressionOp; SMALLVEC_SIZE]> = smallvec![
+            var_reg(mk_eax()),
+            Value(10),
+            Sub(OpIdx::from_idx(1), OpIdx::from_idx(0), U32),
+            Dereference(OpIdx::from_idx(2)),
+            Value(9),
+            Sub(OpIdx::from_idx(4), OpIdx::from_idx(3), U32)
         ];
         assert_eq!(e.0, result);
     }
@@ -2715,13 +2809,14 @@ mod test {
         use ExpressionOp::{Add, Dereference, Sub, Value};
         let mut expression = Expression::from(smallvec![
             Value(6721484),
-            Dereference(0),
+            Dereference(OpIdx::from_idx(0)),
             var_reg(mk_edi()),
-            Sub(1, 2, U32)
+            Sub(OpIdx::from_idx(1), OpIdx::from_idx(2), U32)
         ]);
-        let r = expression.replace_variable_with_expression(2, &Expression::from(0));
+        let r =
+            expression.replace_variable_with_expression(OpIdx::from_idx(2), &Expression::from(0));
         let result: SmallVec<[ExpressionOp; SMALLVEC_SIZE]> =
-            smallvec![Value(6721484), Dereference(0)];
+            smallvec![Value(6721484), Dereference(OpIdx::from_idx(0))];
         assert_eq!(expression.0, result);
         assert_eq!(r, -2);
     }
@@ -2730,34 +2825,38 @@ mod test {
     fn test_replace_flatten_with_value() {
         use ExpressionOp::{Add, Dereference, Sub, Value};
         let mut expression = Expression::from(smallvec![
-            var_reg(mk_esp()), // 0
-            Value(116),        // 1
-            Add(0, 1, U32),    // 2
-            Dereference(2),    // 3
-            Value(156),        // 4
-            var_reg(mk_esp()), // 5
-            Value(76),         // 6
-            Add(5, 6, U32),    // 7
-            Dereference(7),    // 8
-            Sub(4, 8, U32),    // 9
-            Add(3, 9, U32)
-        ]); // 10
+            var_reg(mk_esp()),                                // 0
+            Value(116),                                       // 1
+            Add(OpIdx::from_idx(0), OpIdx::from_idx(1), U32), // 2
+            Dereference(OpIdx::from_idx(2)),                  // 3
+            Value(156),                                       // 4
+            var_reg(mk_esp()),                                // 5
+            Value(76),                                        // 6
+            Add(OpIdx::from_idx(5), OpIdx::from_idx(6), U32), // 7
+            Dereference(OpIdx::from_idx(7)),                  // 8
+            Sub(OpIdx::from_idx(4), OpIdx::from_idx(8), U32), // 9
+            Add(OpIdx::from_idx(3), OpIdx::from_idx(9), U32), // 10
+        ]);
 
-        let sub = Expression::from(smallvec![var_reg(mk_esp()), Value(172), Sub(0, 1, U32)]);
+        let sub = Expression::from(smallvec![
+            var_reg(mk_esp()),
+            Value(172),
+            Sub(OpIdx::from_idx(0), OpIdx::from_idx(1), U32)
+        ]);
 
-        expression.replace_variable_with_expression(0, &sub);
+        expression.replace_variable_with_expression(OpIdx::from_idx(0), &sub);
         let result: SmallVec<[ExpressionOp; SMALLVEC_SIZE]> = smallvec![
             var_reg(mk_esp()),
             Value(56),
-            Sub(0, 1, U32),
-            Dereference(2),
+            Sub(OpIdx::from_idx(0), OpIdx::from_idx(1), U32),
+            Dereference(OpIdx::from_idx(2)),
             var_reg(mk_esp()),
             Value(76),
-            Add(4, 5, U32),
-            Dereference(6),
+            Add(OpIdx::from_idx(4), OpIdx::from_idx(5), U32),
+            Dereference(OpIdx::from_idx(6)),
             Value(156),
-            Sub(8, 7, U32),
-            Add(3, 9, U32)
+            Sub(OpIdx::from_idx(8), OpIdx::from_idx(7), U32),
+            Add(OpIdx::from_idx(3), OpIdx::from_idx(9), U32)
         ];
         assert_eq!(expression.0, result);
     }

@@ -1,4 +1,7 @@
-use crate::{ir::basic_block::BlockSlot, VariableSymbol};
+use crate::{
+    ir::{basic_block::BlockSlot, expression::OpIdx},
+    VariableSymbol,
+};
 use std::{borrow::Cow, collections::HashMap};
 
 use egui::{
@@ -445,7 +448,7 @@ impl Decompiler {
         hf: &HighFunction,
         e: &Expression,
         ip_block: SingleEntrySingleExit<BlockSlot>,
-        pos: usize,
+        pos: OpIdx,
     ) {
         match &e[pos] {
             ExpressionOp::Value(v) => {
@@ -596,7 +599,7 @@ impl Decompiler {
         hf: &HighFunction,
         e: &Expression,
         ip_block: SingleEntrySingleExit<BlockSlot>,
-        pos: usize,
+        pos: OpIdx,
         is_call: bool,
     ) {
         match &e[pos] {
